@@ -129,6 +129,14 @@ if (catkin_FOUND AND ENABLE_ROS)
             RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
     )
     
+    add_executable(run_readbag_msckf src/run_readbag_msckf.cpp)
+    target_link_libraries(run_readbag_msckf ov_msckf_lib ${thirdparty_libraries})
+    install(TARGETS run_readbag_msckf
+            ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+            LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+            RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+    )
+    
     install(DIRECTORY launch/
             DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
     )
