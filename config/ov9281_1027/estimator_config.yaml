@@ -7,6 +7,10 @@ integration: "rk4" # discrete, rk4, analytical (if rk4 or analytical used then a
 use_stereo: true # if we have more than 1 camera, if we should try to track stereo constraints
 max_cameras: 2 # how many cameras we have 1 = mono, 2 = stereo, >2 = binocular (all mono tracking)
 
+fuse_gnss: true
+t_gnss_imu: [0.0, 0.0, 0.0] #gnss antenna pos in imu frame
+gnss_topic: /dm711/satnav
+
 calib_cam_extrinsics: true # degenerate motion
 calib_cam_intrinsics: false
 calib_cam_timeoffset: true # degenerate motion

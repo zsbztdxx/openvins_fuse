@@ -7,11 +7,22 @@ find_package(catkin QUIET COMPONENTS roscpp rosbag tf std_msgs geometry_msgs sen
 option(ENABLE_ROS "Enable or disable building with ROS (if it is found)" ON)
 if (catkin_FOUND AND ENABLE_ROS)
     add_definitions(-DROS_AVAILABLE=1)
+    add_message_files(
+        FILES
+        CsjwGnssHeader.msg
+        satnav.msg
+    )
+
+    generate_messages(
+        DEPENDENCIES
+        std_msgs
+    )
     catkin_package(
             CATKIN_DEPENDS roscpp rosbag tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge ov_core ov_init
             INCLUDE_DIRS src/
             LIBRARIES ov_msckf_lib
     )
+    
 else ()
     add_definitions(-DROS_AVAILABLE=0)
     message(WARNING "BUILDING WITHOUT ROS!")
@@ -88,6 +99,7 @@ list(APPEND LIBRARY_SOURCES
         src/update/UpdaterMSCKF.cpp
         src/update/UpdaterSLAM.cpp
         src/update/UpdaterZeroVelocity.cpp
+        src/utils/pos_transform.cpp
 )
 if (catkin_FOUND AND ENABLE_ROS)
     list(APPEND LIBRARY_SOURCES src/ros/ROS1Visualizer.cpp src/ros/ROSVisualizerHelper.cpp)

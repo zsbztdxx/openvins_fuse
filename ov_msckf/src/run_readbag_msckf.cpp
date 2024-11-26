@@ -27,9 +27,11 @@
 #include "state/Propagator.h"
 #include "state/State.h"
 #include "state/StateHelper.h"
+#include "utils/pos_transform.h"
 
 #if ROS_AVAILABLE == 1
 #include "ros/ROS1Visualizer.h"
+#include "ov_msckf/satnav.h"
 #include <ros/ros.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
@@ -43,6 +45,9 @@ using namespace ov_msckf;
 std::shared_ptr<VioManager> sys;
 #if ROS_AVAILABLE == 1
 std::shared_ptr<ROS1Visualizer> viz;
+ros::Publisher gnss_pub;
+std::vector<double> gnss_pub_init_lla;
+nav_msgs::Path gnss_path;
 #elif ROS_AVAILABLE == 2
 std::shared_ptr<ROS2Visualizer> viz;
 #endif
@@ -50,10 +55,12 @@ std::shared_ptr<ROS2Visualizer> viz;
 
 std::atomic<bool> thread_update_running;
 std::deque<ov_core::CameraData> camera_queue;
-std::mutex camera_queue_mtx;
+std::deque<ov_core::GnssData> gnss_queue;
+std::mutex camera_queue_mtx,gnss_queue_mtx;
 std::map<int, double> camera_last_timestamp;
 
-void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
+void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) 
+{
 
   // convert into correct format
   ov_core::ImuData message;
@@ -113,7 +120,8 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
   }
 }
 
-void callback_monocular(const sensor_msgs::ImageConstPtr &msg0, int cam_id0) {
+void callback_monocular(const sensor_msgs::ImageConstPtr &msg0, int cam_id0)
+{
 
   // Check if we should drop this image
   double timestamp = msg0->header.stamp.toSec();
@@ -153,7 +161,8 @@ void callback_monocular(const sensor_msgs::ImageConstPtr &msg0, int cam_id0) {
 }
 
 void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::ImageConstPtr &msg1, int cam_id0,
-                                     int cam_id1) {
+                                     int cam_id1) 
+{
 
   // Check if we should drop this image
   double timestamp = msg0->header.stamp.toSec();
@@ -206,6 +215,68 @@ void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::
   std::sort(camera_queue.begin(), camera_queue.end());
 }
 
+void callback_gnss(const ov_msckf::satnavConstPtr &msg) 
+{
+  if(msg->pos_status!=4)
+  {
+    return;
+  }
+  // convert into correct format
+  ov_core::GnssData message;
+  message.timestamp = msg->header.header.stamp.toSec();
+  message.latitude = msg->latitude;
+  message.longitude = msg->longitude;
+  message.altitude = msg->altitude;
+  message.ve = msg->vel_east;
+  message.vn = msg->vel_north;
+  message.vu = msg->vel_up;
+  message.status_pos = msg->pos_status;
+  message.std_latitude = msg->std_latitude;
+  message.std_longitude = msg->std_longitude;
+  message.std_altitude = msg->std_altitude;
+  message.std_ve = msg->std_vel_east;
+  message.std_vn = msg->std_vel_north;
+  message.std_vu = msg->std_vel_up;
+
+  // append it to our queue of gnss
+  std::lock_guard<std::mutex> lck(gnss_queue_mtx);
+  gnss_queue.push_back(message);
+  std::sort(gnss_queue.begin(), gnss_queue.end());
+
+  //pub gnss pos 
+  if(gnss_pub_init_lla.size()==0)
+  {
+    gnss_pub_init_lla.push_back(msg->latitude);
+    gnss_pub_init_lla.push_back(msg->longitude);
+    gnss_pub_init_lla.push_back(msg->altitude);
+  }
+
+  std::vector<double> lla(3);
+  lla[0]=msg->latitude,lla[1]=msg->longitude,lla[2]=msg->altitude;
+  std::vector<double> enu = lla2enu(lla,gnss_pub_init_lla);
+
+  gnss_path.header.stamp = msg->header.header.stamp;
+  gnss_path.header.frame_id = "global";
+  geometry_msgs::PoseStamped curr_path;
+
+  curr_path.header.stamp = msg->header.header.stamp;
+  curr_path.header.frame_id = "global";
+
+  curr_path.pose.position.x = enu[0];
+  curr_path.pose.position.y = enu[1];
+  curr_path.pose.position.z = enu[2];
+
+  curr_path.pose.orientation.x = 0;
+  curr_path.pose.orientation.y = 0;
+  curr_path.pose.orientation.z = 0;
+  curr_path.pose.orientation.w = 1;
+
+  gnss_path.poses.push_back(curr_path);
+
+  gnss_pub.publish(gnss_path);
+
+}
+
 // Main function
 int main(int argc, char **argv) {
 
@@ -220,7 +291,7 @@ int main(int argc, char **argv) {
   ros::init(argc, argv, "run_readbag_msckf");
   auto nh = std::make_shared<ros::NodeHandle>("~");
   nh->param<std::string>("config_path", config_path, config_path);
-  
+  gnss_pub = nh->advertise<nav_msgs::Path>("gnss_path", 20);
 #elif ROS_AVAILABLE == 2
   // Launch our ros node
   rclcpp::init(argc, argv);
@@ -262,7 +333,6 @@ int main(int argc, char **argv) {
   }
 
   // read ros bag and feed
-  PRINT_DEBUG("done...spinning to ros\n");
 #if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
   rosbag::Bag bag;
   std::string bag_path;
@@ -272,10 +342,23 @@ int main(int argc, char **argv) {
   parser->parse_external("relative_config_imucam", "cam0", "rostopic", cam0_topic);
   parser->parse_external("relative_config_imucam", "cam1", "rostopic", cam1_topic);
 
+  bool fuse_gnss = false;
+  parser->parse_config("fuse_gnss", fuse_gnss);
+  std::string gnss_topic;
+  std::vector<double> t_gnss_imu = {0, 0, 0};
+  if(fuse_gnss)
+  {
+    parser->parse_config("gnss_topic", gnss_topic);
+    parser->parse_config("t_gnss_imu", t_gnss_imu);
+    PRINT_DEBUG("fuse gnss = true, gnss_topic = %s, t_gnss_imu = [%f,%f,%f]\n",
+      gnss_topic.c_str(),t_gnss_imu[0],t_gnss_imu[1],t_gnss_imu[2]);
+  }
+
   bag.open(bag_path, rosbag::BagMode::Read);
   if(!bag.isOpen())
   {
-    std::cout<<"can't open bag file!"<<std::endl;      
+    PRINT_ERROR(RED "unable to open bag file\n" RESET);
+    std::exit(EXIT_FAILURE);      
   }
 
   rosbag::View view(bag);
@@ -304,6 +387,11 @@ int main(int argc, char **argv) {
     else if(topic == cam0_topic) 
     {
       cam0_msg = msg.instantiate<sensor_msgs::Image>();
+    }
+    else if(topic == gnss_topic)
+    {
+      ov_msckf::satnavConstPtr gnss_msg = msg.instantiate<ov_msckf::satnav>();
+      callback_gnss(gnss_msg);
     }
 
     if(!use_stereo){

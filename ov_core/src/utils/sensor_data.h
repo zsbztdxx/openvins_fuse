@@ -78,6 +78,30 @@ struct CameraData {
   }
 };
 
+/**
+ * @brief Struct for a single gnss measurement
+ */
+struct GnssData {
+
+  /// Timestamp of the reading
+  double timestamp;
+
+  /// latitude,longitude,altitude
+  double latitude,longitude,altitude;
+
+  /// velocity of enu
+  double ve,vn,vu;
+
+  /// int status
+  int status_pos;
+
+  /// std
+  double std_latitude,std_longitude,std_altitude,std_ve,std_vn,std_vu;
+
+  /// Sort function to allow for using of STL containers
+  bool operator<(const GnssData &other) const { return timestamp < other.timestamp; }
+};
+
 } // namespace ov_core
 
 #endif // OV_CORE_SENSOR_DATA_H
