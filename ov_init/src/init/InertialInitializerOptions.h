@@ -115,6 +115,12 @@ struct InertialInitializerOptions {
   /// Initial IMU accelerometer bias values for dynamic initialization (will be optimized)
   Eigen::Vector3d init_dyn_bias_a = Eigen::Vector3d::Zero();
 
+  /// Amount of time we will initialize gnss over (seconds)
+  double init_gnss_window_time = 2.0;
+
+  /// min move distance for gnss and vio align
+  double init_gnss_min_move = 2.0;
+
   /**
    * @brief This function will load print out all initializer settings loaded.
    * This allows for visual checking that everything was loaded properly from ROS/CMD parsers.
@@ -140,6 +146,8 @@ struct InertialInitializerOptions {
       parser->parse_config("init_dyn_inflation_bg", init_dyn_inflation_bias_gyro);
       parser->parse_config("init_dyn_inflation_ba", init_dyn_inflation_bias_accel);
       parser->parse_config("init_dyn_min_rec_cond", init_dyn_min_rec_cond);
+      parser->parse_config("init_gnss_window_time", init_gnss_window_time,false);
+      parser->parse_config("init_gnss_min_move", init_gnss_min_move,false);
       std::vector<double> bias_g = {0, 0, 0};
       std::vector<double> bias_a = {0, 0, 0};
       parser->parse_config("init_dyn_bias_g", bias_g);
@@ -151,6 +159,8 @@ struct InertialInitializerOptions {
     PRINT_DEBUG("  - init_imu_thresh: %.2f\n", init_imu_thresh);
     PRINT_DEBUG("  - init_max_disparity: %.2f\n", init_max_disparity);
     PRINT_DEBUG("  - init_max_features: %.2f\n", init_max_features);
+    PRINT_DEBUG("  - init_gnss_window_time: %.2f\n", init_gnss_window_time);
+    PRINT_DEBUG("  - init_gnss_min_move: %.2f\n", init_gnss_min_move);
     if (init_max_features < 15) {
       PRINT_ERROR(RED "number of requested feature tracks to init not enough!!\n" RESET);
       PRINT_ERROR(RED "  init_max_features = %d\n" RESET, init_max_features);

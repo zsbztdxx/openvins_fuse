@@ -50,6 +50,7 @@ class StateHelper;
 class UpdaterMSCKF;
 class UpdaterSLAM;
 class UpdaterZeroVelocity;
+class UpdaterGNSS;
 class Propagator;
 
 /**
@@ -74,6 +75,10 @@ public:
    */
   void feed_measurement_imu(const ov_core::ImuData &message);
 
+  void feed_measurement_gnss(const ov_core::GnssData &message);
+
+  void feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos);
+
   /**
    * @brief Feed function for camera measurements
    * @param message Contains our timestamp, images, and camera ids
@@ -97,6 +102,9 @@ public:
 
   /// If we are initialized or not
   bool initialized() { return is_initialized_vio && timelastupdate != -1; }
+
+  /// If we are initialized gnss or not
+  bool initialized_gnss() { return is_initialized_gnss && init_lla.size() == 3; }
 
   /// Timestamp that the system was initialized at
   double initialized_time() { return startup_time; }
@@ -134,6 +142,18 @@ public:
     timestamp = active_tracks_time;
     feat_posinG = active_tracks_posinG;
     feat_tracks_uvd = active_tracks_uvd;
+  }
+
+  std::vector<double> get_init_lla(){
+    return init_lla;
+  }
+
+  Eigen::Matrix3d get_R_GNSStoI(){
+    return init_R_GNSStoI;
+  }
+
+  Eigen::Vector3d get_t_GNSStoI(){
+    return init_t_GNSStoI;
   }
 
 protected:
@@ -197,6 +217,12 @@ protected:
   /// Boolean if we are initialized or not
   bool is_initialized_vio = false;
 
+  /// Boolean if we are initialized gnss or not
+  bool is_initialized_gnss = false;
+  std::vector<double> init_lla;
+  Eigen::Matrix3d init_R_GNSStoI;
+  Eigen::Vector3d init_t_GNSStoI;
+
   /// Our MSCKF feature updater
   std::shared_ptr<UpdaterMSCKF> updaterMSCKF;
 
@@ -205,6 +231,9 @@ protected:
 
   /// Our zero velocity tracker
   std::shared_ptr<UpdaterZeroVelocity> updaterZUPT;
+
+  /// Our gnss tracker
+  std::shared_ptr<UpdaterGNSS> updaterGNSS;
 
   /// This is the queue of measurement times that have come in since we starting doing initialization
   /// After we initialize, we will want to prop & update to the latest timestamp quickly

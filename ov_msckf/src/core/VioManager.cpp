@@ -42,6 +42,7 @@
 #include "update/UpdaterMSCKF.h"
 #include "update/UpdaterSLAM.h"
 #include "update/UpdaterZeroVelocity.h"
+#include "update/UpdaterGNSS.h"
 
 using namespace ov_core;
 using namespace ov_type;
@@ -161,6 +162,11 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
                                                         propagator, params.gravity_mag, params.zupt_max_velocity,
                                                         params.zupt_noise_multiplier, params.zupt_max_disparity);
   }
+
+  // If we are fusing gnss data, then create the updater
+  if (params.fuse_gnss){
+    updaterGNSS = std::make_shared<UpdaterGNSS>(params.imu_noises,propagator);
+  }
 }
 
 void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
@@ -185,6 +191,43 @@ void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
   // No need to push back if we are just doing the zv-update at the begining and we have moved
   if (is_initialized_vio && updaterZUPT != nullptr && (!params.zupt_only_at_beginning || !has_moved_since_zupt)) {
     updaterZUPT->feed_imu(message, oldest_time);
+  }
+
+  // Push back to the fuse gnss updater if it is enabled
+  if(is_initialized_vio && updaterGNSS != nullptr){
+    updaterGNSS->feed_imu(message,oldest_time);
+  }
+}
+
+void VioManager::feed_measurement_gnss(const ov_core::GnssData &message) 
+{
+  // Push back to our initializer
+  if (!is_initialized_gnss) {
+    double oldest_time = -1;
+    if(is_initialized_vio){
+      oldest_time = startup_time;
+    }
+    initializer->feed_gnss(message,oldest_time);
+    Eigen::Matrix3d R;
+    Eigen::Vector3d t;
+    std::vector<double> lla0;
+    bool res = initializer->initialize_gnss(R,t,lla0,state->_clones_IMU,state->_calib_dt_CAMtoIMU->value()(0));
+    PRINT_ERROR(RED "initializer->initialize_gnss:%d\n" RESET,res);
+    if(res){
+      is_initialized_gnss = true;
+      init_lla = lla0;
+      init_R_GNSStoI = R;
+      init_t_GNSStoI = t;
+    }
+  }
+}
+
+void VioManager::feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos)
+{
+  if (!is_initialized_gnss) {
+    if(is_initialized_vio){
+      initializer->feed_imu_pos(pos);
+    }
   }
 }
 

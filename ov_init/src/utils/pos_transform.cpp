@@ -1,13 +1,13 @@
 #include "pos_transform.h"
 #include <cmath>
+#include <iostream>
 #define RE_WGS84 6378137.0 //earth semimajor axis (WGS84) (m) 
 #define FE_WGS84 (1.0/298.257223563) //earth flattening (WGS84)
-#define PI 3.1415926535897932 
 
 std::vector<double> lla2ecef(double lat,double lon,double alt)
 {
-    lat = lat / 180 * PI;
-    lon = lon / 180 * PI;
+    lat = lat / 180 * M_PI;
+    lon = lon / 180 * M_PI;
     double a = RE_WGS84;
     double f = FE_WGS84;
     double b = (1 - f) * a;
@@ -46,8 +46,8 @@ std::vector<double> ecef2lla(double x,double y,double z)
     double lat = phi;
     
     std::vector<double> lla(3);
-    lla[0] = lat/PI*180;
-    lla[1] = lon/PI*180;
+    lla[0] = lat/M_PI*180;
+    lla[1] = lon/M_PI*180;
     lla[2] = h;
     return lla;
 }
@@ -56,10 +56,10 @@ std::vector<double> lla2enu(std::vector<double> lla,std::vector<double> ref_lla)
 {
     std::vector<double> pos = lla2ecef(lla[0],lla[1],lla[2]);
     std::vector<double> ref_pos = lla2ecef(ref_lla[0],ref_lla[1],ref_lla[2]);
-    double sin_ref_lat = std::sin(ref_lla[0]/180*PI);
-    double cos_ref_lat = std::cos(ref_lla[0]/180*PI);
-    double sin_ref_lon = std::sin(ref_lla[1]/180*PI);
-    double cos_ref_lon = std::cos(ref_lla[1]/180*PI);
+    double sin_ref_lat = std::sin(ref_lla[0]/180*M_PI);
+    double cos_ref_lat = std::cos(ref_lla[0]/180*M_PI);
+    double sin_ref_lon = std::sin(ref_lla[1]/180*M_PI);
+    double cos_ref_lon = std::cos(ref_lla[1]/180*M_PI);
     double dx = pos[0] - ref_pos[0];
     double dy = pos[1] - ref_pos[1];
     double dz = pos[2] - ref_pos[2];
@@ -72,4 +72,20 @@ std::vector<double> lla2enu(std::vector<double> lla,std::vector<double> ref_lla)
     enu[1] = n;
     enu[2] = u;
     return enu;
+}
+
+Eigen::Vector3d linear_interpolation_enu(std::pair<double,Eigen::Vector3d> pos0,
+                    std::pair<double,Eigen::Vector3d> pos1,double timestamp)
+{
+    Eigen::Vector3d v = (pos1.second - pos0.second)/(pos1.first - pos0.first);
+    Eigen::Vector3d pos; 
+    if(fabs(pos0.first - timestamp) < fabs(pos1.first - timestamp))
+    {
+        pos = pos0.second + v * (timestamp - pos0.first);
+    }
+    else
+    {
+        pos = pos1.second - v * (pos1.first - timestamp);
+    }
+    return pos;
 }

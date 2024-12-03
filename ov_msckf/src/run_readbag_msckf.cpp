@@ -72,6 +72,14 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
   sys->feed_measurement_imu(message);
   viz->visualize_odometry(message.timestamp);
 
+  /*{
+    if(!sys->initialized() || !sys->initialized_gnss()){
+        for(size_t i=0;i<gnss_queue.size();i++){
+            sys->feed_measurement_gnss(gnss_queue[i]);
+        }
+    }
+  }*/
+
   // If the processing queue is currently active / running just return so we can keep getting measurements
   // Otherwise create a second thread to do our update in an async manor
   // The visualization of the state, images, and features will be synchronous with the update!
@@ -100,15 +108,27 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
       while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
         auto rT0_1 = boost::posix_time::microsec_clock::local_time();
         double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
+        static int count = 0;
         sys->feed_measurement_camera(camera_queue.at(0));
         viz->visualize();
+        
         camera_queue.pop_front();
         auto rT0_2 = boost::posix_time::microsec_clock::local_time();
         double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
         PRINT_INFO(BLUE "[TIME]: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
+        PRINT_INFO(BLUE "clones imu size:%d\n" RESET, sys->get_state()->_clones_IMU.size());
+        PRINT_INFO(BLUE "count :%d\n" RESET, count++);
+        
+        if(sys->initialized() && !sys->initialized_gnss()){
+            double timestamp = sys->get_state()->_timestamp;
+            Eigen::Vector3d pos = sys->get_state()->_imu->pos();
+            sys->feed_imu_pos(std::pair<double,Eigen::Vector3d>(timestamp,pos));
+            PRINT_INFO(BLUE "!initialized_gnss,feed imu pos\n" RESET);
+        }
       }
     }
     thread_update_running = false;
+    
   });
 
   // If we are single threaded, then run single threaded
@@ -217,7 +237,7 @@ void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::
 
 void callback_gnss(const ov_msckf::satnavConstPtr &msg) 
 {
-  if(msg->pos_status!=4)
+  if(msg->pos_status==0)
   {
     return;
   }
@@ -243,12 +263,22 @@ void callback_gnss(const ov_msckf::satnavConstPtr &msg)
   gnss_queue.push_back(message);
   std::sort(gnss_queue.begin(), gnss_queue.end());
 
+  if(!sys->initialized_gnss())
+  {
+    PRINT_ERROR(RED "!sys->initialized_gnss\n" RESET);
+    sys->feed_measurement_gnss(message);
+  }
+
   //pub gnss pos 
+  if(!sys->initialized_gnss())
+  {
+    return;
+  }
   if(gnss_pub_init_lla.size()==0)
   {
-    gnss_pub_init_lla.push_back(msg->latitude);
-    gnss_pub_init_lla.push_back(msg->longitude);
-    gnss_pub_init_lla.push_back(msg->altitude);
+    gnss_pub_init_lla.push_back(sys->get_init_lla()[0]);
+    gnss_pub_init_lla.push_back(sys->get_init_lla()[1]);
+    gnss_pub_init_lla.push_back(sys->get_init_lla()[2]);
   }
 
   std::vector<double> lla(3);
@@ -262,9 +292,13 @@ void callback_gnss(const ov_msckf::satnavConstPtr &msg)
   curr_path.header.stamp = msg->header.header.stamp;
   curr_path.header.frame_id = "global";
 
-  curr_path.pose.position.x = enu[0];
-  curr_path.pose.position.y = enu[1];
-  curr_path.pose.position.z = enu[2];
+  Eigen::Vector3d tmp;
+  tmp[0] = enu[0],tmp[1] = enu[1],tmp[2] = enu[2];
+  tmp = sys->get_R_GNSStoI() * tmp + sys->get_t_GNSStoI();
+
+  curr_path.pose.position.x = tmp[0];
+  curr_path.pose.position.y = tmp[1];
+  curr_path.pose.position.z = tmp[2];
 
   curr_path.pose.orientation.x = 0;
   curr_path.pose.orientation.y = 0;

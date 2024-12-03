@@ -23,10 +23,12 @@
 #define OV_INIT_INERTIALINITIALIZER_H
 
 #include "init/InertialInitializerOptions.h"
+#include "../../../ov_core/src/types/PoseJPL.h"
 
 namespace ov_core {
 class FeatureDatabase;
 struct ImuData;
+struct GnssData; 
 } // namespace ov_core
 namespace ov_type {
 class Type;
@@ -74,6 +76,10 @@ public:
    */
   void feed_imu(const ov_core::ImuData &message, double oldest_time = -1);
 
+  void feed_gnss(const ov_core::GnssData &message, double oldest_time = -1);
+
+  void feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos, double oldest_time = -1);
+
   /**
    * @brief Try to get the initialized system
    *
@@ -97,6 +103,9 @@ public:
   bool initialize(double &timestamp, Eigen::MatrixXd &covariance, std::vector<std::shared_ptr<ov_type::Type>> &order,
                   std::shared_ptr<ov_type::IMU> t_imu, bool wait_for_jerk = true);
 
+  bool initialize_gnss(Eigen::Matrix3d &R_GNSStoI, Eigen::Vector3d &tran,std::vector<double> &init_lla,
+                      std::map<double, std::shared_ptr<ov_type::PoseJPL>> &clone_imu,double dt_CAMtoIMU=0);
+
 protected:
   /// Initialization parameters
   InertialInitializerOptions params;
@@ -106,6 +115,12 @@ protected:
 
   /// Our history of IMU messages (time, angular, linear)
   std::shared_ptr<std::vector<ov_core::ImuData>> imu_data;
+
+  /// Our history of GNSS messages 
+  std::shared_ptr<std::vector<ov_core::GnssData>> gnss_data;
+
+  /// Our history of imu position 
+  std::shared_ptr<std::vector<std::pair<double,Eigen::Vector3d>>> imu_pos_vec;
 
   /// Static initialization helper class
   std::shared_ptr<StaticInitializer> init_static;
