@@ -72,14 +72,6 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
   sys->feed_measurement_imu(message);
   viz->visualize_odometry(message.timestamp);
 
-  /*{
-    if(!sys->initialized() || !sys->initialized_gnss()){
-        for(size_t i=0;i<gnss_queue.size();i++){
-            sys->feed_measurement_gnss(gnss_queue[i]);
-        }
-    }
-  }*/
-
   // If the processing queue is currently active / running just return so we can keep getting measurements
   // Otherwise create a second thread to do our update in an async manor
   // The visualization of the state, images, and features will be synchronous with the update!
@@ -108,17 +100,28 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
       while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
         auto rT0_1 = boost::posix_time::microsec_clock::local_time();
         double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
-        static int count = 0;
+        
+        if(!gnss_queue.empty()){
+          std::lock_guard<std::mutex> lck(gnss_queue_mtx);
+          while (!gnss_queue.empty() && gnss_queue.at(0).timestamp < camera_queue.at(0).timestamp)
+          {
+              sys->feed_measurement_gnss(gnss_queue.at(0));
+              gnss_queue.pop_front();
+          }
+        }
+
         sys->feed_measurement_camera(camera_queue.at(0));
         viz->visualize();
+        if(sys->initialized()){
+          PRINT_INFO("camera timestamp:%.2f,state timestamp:%.2f,imu pos:(%.2f,%.2f,%.2f)\n", camera_queue.at(0).timestamp,
+          sys->get_state()->_timestamp,sys->get_state()->_imu->pos()[0],sys->get_state()->_imu->pos()[1],sys->get_state()->_imu->pos()[2]);
+        }
         
         camera_queue.pop_front();
         auto rT0_2 = boost::posix_time::microsec_clock::local_time();
         double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
         PRINT_INFO(BLUE "[TIME]: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
-        PRINT_INFO(BLUE "clones imu size:%d\n" RESET, sys->get_state()->_clones_IMU.size());
-        PRINT_INFO(BLUE "count :%d\n" RESET, count++);
-        
+
         if(sys->initialized() && !sys->initialized_gnss()){
             double timestamp = sys->get_state()->_timestamp;
             Eigen::Vector3d pos = sys->get_state()->_imu->pos();
@@ -263,11 +266,11 @@ void callback_gnss(const ov_msckf::satnavConstPtr &msg)
   gnss_queue.push_back(message);
   std::sort(gnss_queue.begin(), gnss_queue.end());
 
-  if(!sys->initialized_gnss())
+  /*if(!sys->initialized_gnss())
   {
     PRINT_ERROR(RED "!sys->initialized_gnss\n" RESET);
     sys->feed_measurement_gnss(message);
-  }
+  }*/
 
   //pub gnss pos 
   if(!sys->initialized_gnss())

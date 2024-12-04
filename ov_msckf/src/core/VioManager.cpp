@@ -165,7 +165,7 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
 
   // If we are fusing gnss data, then create the updater
   if (params.fuse_gnss){
-    updaterGNSS = std::make_shared<UpdaterGNSS>(params.imu_noises,propagator);
+    updaterGNSS = std::make_shared<UpdaterGNSS>(propagator);
   }
 }
 
@@ -212,14 +212,23 @@ void VioManager::feed_measurement_gnss(const ov_core::GnssData &message)
     Eigen::Vector3d t;
     std::vector<double> lla0;
     bool res = initializer->initialize_gnss(R,t,lla0,state->_clones_IMU,state->_calib_dt_CAMtoIMU->value()(0));
-    PRINT_ERROR(RED "initializer->initialize_gnss:%d\n" RESET,res);
+    
     if(res){
       is_initialized_gnss = true;
       init_lla = lla0;
       init_R_GNSStoI = R;
       init_t_GNSStoI = t;
+    }else{
+      PRINT_ERROR(RED "gnss and vio align failed!\n" RESET);
+      return;
     }
   }
+  if(init_lla.size()!=3){
+    return;
+  }
+  Eigen::Vector3d lla0;
+  lla0[0] = init_lla[0],lla0[1] = init_lla[1],lla0[2] = init_lla[2];
+  updaterGNSS->try_update(state,message,lla0,init_R_GNSStoI,init_t_GNSStoI);
 }
 
 void VioManager::feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos)

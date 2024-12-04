@@ -3,7 +3,6 @@
 
 #include <memory>
 #include "utils/sensor_data.h"
-#include "utils/NoiseManager.h"
 
 namespace ov_msckf {
 
@@ -13,7 +12,7 @@ class Propagator;
 class UpdaterGNSS {
 
 public:
-    UpdaterGNSS(NoiseManager &noises, std::shared_ptr<Propagator> prop);
+    UpdaterGNSS(std::shared_ptr<Propagator> prop);
 
     /**
     * @brief Feed function for inertial data
@@ -53,16 +52,17 @@ public:
   }
 
   /**
-   * @brief Will first detect if the system is zero velocity, then will update.
+   * @brief Will first detect if the gnss pos is valid, then will update.
    * @param state State of the filter
-   * @param timestamp Next camera timestamp we want to see if we should propagate to.
-   * @return True if the system is currently at zero velocity
+   * @param gnss_data gnss data
+   * @param init_lla lat,lon,alt transform to enu reference 
+   * @param init_R_GNSStoI gnss enu position tranform Matrix to imu frame
+   * @param init_t_GNSStoI gnss enu position translation to imu frame
+   * @return True if the system is fuse gnss data
    */
-  bool try_update(std::shared_ptr<State> state, double timestamp);
+  bool try_update(std::shared_ptr<State> state, const ov_core::GnssData &gnss_data,const Eigen::Vector3d &init_lla,
+                const Eigen::Matrix3d &init_R_GNSStoI,const Eigen::Vector3d &init_t_GNSStoI);
 protected:
-    /// Container for the imu noise values
-    NoiseManager _noises;
-
     /// Our propagator!
     std::shared_ptr<Propagator> _prop;
     /// Our history of IMU messages (time, angular, linear)
