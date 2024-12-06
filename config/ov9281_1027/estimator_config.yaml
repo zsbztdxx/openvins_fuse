@@ -12,6 +12,8 @@ t_gnss_imu: [0.0, 0.0, 0.0] #gnss antenna pos in imu frame
 gnss_topic: /dm711/satnav
 init_gnss_window_time: 10.0
 init_gnss_min_move: 2.0
+save_lla_file: true
+lla_filepath: "/tmp/ov_estimate_lla.pos"
 
 calib_cam_extrinsics: false # degenerate motion
 calib_cam_intrinsics: false

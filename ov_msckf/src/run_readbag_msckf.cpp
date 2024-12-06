@@ -52,12 +52,72 @@ nav_msgs::Path gnss_path;
 std::shared_ptr<ROS2Visualizer> viz;
 #endif
 
-
 std::atomic<bool> thread_update_running;
 std::deque<ov_core::CameraData> camera_queue;
 std::deque<ov_core::GnssData> gnss_queue;
 std::mutex camera_queue_mtx,gnss_queue_mtx;
 std::map<int, double> camera_last_timestamp;
+
+//save lla path
+std::deque<std::pair<double,Eigen::Vector3d>> fuse_pos;
+std::mutex fuse_pos_queue_mtx;
+bool quit_save_lla = false;
+bool save_lla_file = false;
+void save_lla_thread(const std::string path)
+{
+    FILE* fp = fopen(path.c_str(),"w");
+    bool save_as_rtkplot_pos = false;
+    if(path.find(".pos") != std::string::npos){
+      save_as_rtkplot_pos = true;
+    }
+
+    if(save_as_rtkplot_pos){
+      fprintf(fp, "%% UTC                     latitude(deg) longitude(deg)   height(m) Q  ns   sdn(m)   sde(m)   sdu(m)  sdne(m)  sdeu(m)  sdun(m) age(s)  ratio\n");
+    }else{
+      fprintf(fp,"#timestamp,latitude,longitude,altitude\n");
+    }
+    
+    fflush(fp);
+    while(!quit_save_lla)
+    {
+        if(fuse_pos.size()>0 && sys && sys->initialized_gnss())
+        {
+          std::lock_guard<std::mutex> lck(fuse_pos_queue_mtx);
+          while (!fuse_pos.empty())
+          {
+            double timestamp = fuse_pos.front().first;
+            Eigen::Vector3d pos_imu = fuse_pos.front().second;
+            Eigen::Vector3d pos_gnss = sys->get_R_GNSStoI().transpose()*(pos_imu-sys->get_t_GNSStoI());
+            std::vector<double> tmp(3);
+            tmp[0] = pos_gnss[0],tmp[1] = pos_gnss[1],tmp[2] = pos_gnss[2];
+            std::vector<double> lla = enu2lla(tmp,sys->get_init_lla());
+
+            if(save_as_rtkplot_pos){
+              ros::WallTime time = ros::WallTime(timestamp + 8*3600);
+              int year = time.toBoost().date().year();
+              int month = time.toBoost().date().month();
+              int day = time.toBoost().date().day();
+              int hours = time.toBoost().time_of_day().hours();
+              int minutes = time.toBoost().time_of_day().minutes();
+              int seconds = time.toBoost().time_of_day().seconds();
+              int milliseconds = round(time.toBoost().time_of_day().fractional_seconds()/1000.0);
+              
+              char timestr[64];
+
+              sprintf(timestr,"%04d/%02d/%02d %02d:%02d:%02d.%03d",year,month,day,hours,minutes,seconds,milliseconds);
+              fprintf(fp, "%s   %.09f  %.9f   %.4f    4  0   0   0   0   0   0   0   0   0\n", timestr,lla[0],lla[1],lla[2]);
+            }else{
+              fprintf(fp, "%.6f,%.9f,%.9f,%.4f\n", timestamp,lla[0],lla[1],lla[2]);
+            }
+            
+            fuse_pos.pop_front();
+          }
+          fflush(fp);
+        }
+        usleep(100*1000);
+    }
+    fclose(fp);
+}
 
 void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) 
 {
@@ -127,6 +187,13 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
             Eigen::Vector3d pos = sys->get_state()->_imu->pos();
             sys->feed_imu_pos(std::pair<double,Eigen::Vector3d>(timestamp,pos));
             PRINT_INFO(BLUE "!initialized_gnss,feed imu pos\n" RESET);
+        }
+
+        if(save_lla_file && sys->initialized()){
+          double timestamp = sys->get_state()->_timestamp;
+          Eigen::Vector3d pos = sys->get_state()->_imu->pos();
+          std::lock_guard<std::mutex> lck(fuse_pos_queue_mtx);
+          fuse_pos.emplace_back(std::pair<double,Eigen::Vector3d>(timestamp,pos));
         }
       }
     }
@@ -286,6 +353,7 @@ void callback_gnss(const ov_msckf::satnavConstPtr &msg)
 
   std::vector<double> lla(3);
   lla[0]=msg->latitude,lla[1]=msg->longitude,lla[2]=msg->altitude;
+
   std::vector<double> enu = lla2enu(lla,gnss_pub_init_lla);
 
   gnss_path.header.stamp = msg->header.header.stamp;
@@ -380,7 +448,7 @@ int main(int argc, char **argv) {
   parser->parse_external("relative_config_imucam", "cam1", "rostopic", cam1_topic);
 
   bool fuse_gnss = false;
-  parser->parse_config("fuse_gnss", fuse_gnss);
+  parser->parse_config("fuse_gnss", fuse_gnss ,false);
   std::string gnss_topic;
   std::vector<double> t_gnss_imu = {0, 0, 0};
   if(fuse_gnss)
@@ -396,6 +464,15 @@ int main(int argc, char **argv) {
   {
     PRINT_ERROR(RED "unable to open bag file\n" RESET);
     std::exit(EXIT_FAILURE);      
+  }
+
+  //save lla file
+  parser->parse_config("fuse_gnss", save_lla_file ,false);
+  if(save_lla_file){
+    std::string lla_filepath = "/tmp/ov_estimate_lla.txt";
+    parser->parse_config("lla_filepath", lla_filepath);
+    std::thread thread(&save_lla_thread,lla_filepath);
+    thread.detach();
   }
 
   rosbag::View view(bag);
@@ -453,6 +530,7 @@ int main(int argc, char **argv) {
 
   // Final visualization
   viz->visualize_final();
+  quit_save_lla = true;
 #if ROS_AVAILABLE == 1
   ros::shutdown();
 #elif ROS_AVAILABLE == 2
