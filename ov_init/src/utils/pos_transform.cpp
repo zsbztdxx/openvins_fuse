@@ -57,6 +57,16 @@ std::vector<double> lla2enu(std::vector<double> lla,std::vector<double> ref_lla)
 {
     std::vector<double> pos = lla2ecef(lla[0],lla[1],lla[2]);
     std::vector<double> ref_pos = lla2ecef(ref_lla[0],ref_lla[1],ref_lla[2]);
+    // for (const auto & element : pos)
+    // {
+    //     std::cerr << "pos" << element << ",";
+    // }
+    // std::cerr << std::endl;
+    // for (const auto & element : ref_pos)
+    // {
+    //     std::cerr << "ref_pos" << element << ",";
+    // }
+    // std::cerr << std::endl;
     double sin_ref_lat = std::sin(ref_lla[0]/180*M_PI);
     double cos_ref_lat = std::cos(ref_lla[0]/180*M_PI);
     double sin_ref_lon = std::sin(ref_lla[1]/180*M_PI);
@@ -73,6 +83,11 @@ std::vector<double> lla2enu(std::vector<double> lla,std::vector<double> ref_lla)
     enu[0] = e;
     enu[1] = n;
     enu[2] = u;
+    // for (const auto & element : enu)
+    // {
+    //     std::cerr << "enu" << element << ",";
+    // }
+    // std::cerr << std::endl;
     return enu;
 }
 

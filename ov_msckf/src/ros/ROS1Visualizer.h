@@ -45,15 +45,25 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <ctime>
 
 #include <Eigen/Eigen>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/filesystem.hpp>
 #include <cv_bridge/cv_bridge.h>
 
+#include "ov_msckf/satnav.h"
+#include "ov_msckf/insnav.h"
+#include "ov_msckf/ggp.h"
+#include "ov_msckf/inspva.h"
+
 namespace ov_core {
 class YamlParser;
 struct CameraData;
+struct SatNavData;
+struct InsNavData;
+struct InsPvaData;
+struct GGPData;
 } // namespace ov_core
 
 namespace ov_msckf {
@@ -98,7 +108,7 @@ public:
    * This will take the current state estimate and get the propagated pose to the desired time.
    * This can be used to get pose estimates on systems which require high frequency pose estimates.
    */
-  void visualize_odometry(double timestamp);
+  void visualize_odometry(double timestamp, std::deque<std::pair<double, Eigen::Vector3d>> &imu_pos_queue);
 
   /**
    * @brief After the run has ended, print results
@@ -113,6 +123,15 @@ public:
 
   /// Callback for synchronized stereo camera information
   void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::ImageConstPtr &msg1, int cam_id0, int cam_id1);
+
+  /// Callback for satnav information
+  void callback_satnav(const ov_msckf::satnavConstPtr &msg); 
+
+  /// Callback for inspva information
+  void callback_inspva(const ov_msckf::inspvaConstPtr &msg);
+
+  /// Callback for ggp information
+  void callback_ggp(const ov_msckf::ggpConstPtr &ggp_msg);
 
 protected:
   /// Publish the current state
@@ -141,13 +160,13 @@ protected:
 
   // Our publishers
   image_transport::Publisher it_pub_tracks, it_pub_loop_img_depth, it_pub_loop_img_depth_color;
-  ros::Publisher pub_poseimu, pub_odomimu, pub_pathimu;
+  ros::Publisher pub_poseimu, pub_odomimu, pub_pathimu, pub_satnav, pub_inspva;
   ros::Publisher pub_points_msckf, pub_points_slam, pub_points_aruco, pub_points_sim;
   ros::Publisher pub_loop_pose, pub_loop_point, pub_loop_extrinsic, pub_loop_intrinsics;
   std::shared_ptr<tf::TransformBroadcaster> mTfBr;
 
   // Our subscribers and camera synchronizers
-  ros::Subscriber sub_imu;
+  ros::Subscriber sub_imu,sub_satnav,sub_ggp,sub_inspva;
   std::vector<ros::Subscriber> subs_cam;
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
   std::vector<std::shared_ptr<message_filters::Synchronizer<sync_pol>>> sync_cam;
@@ -177,7 +196,11 @@ protected:
   /// This also handles out-of-order camera measurements, which is rare, but
   /// a nice feature to have for general robustness to bad camera drivers.
   std::deque<ov_core::CameraData> camera_queue;
-  std::mutex camera_queue_mtx;
+  std::mutex camera_queue_mtx, satnav_queue_mtx, ggp_queue_mtx, inspva_queue_mtx;
+
+  std::deque<ov_core::SatNavData> gnss_queue;
+  std::deque<ov_core::GGPData> ggp_queue;
+  std::deque<ov_core::InsPvaData> ins_gnss_queue;
 
   // Last camera message timestamps we have received (mapped by cam id)
   std::map<int, double> camera_last_timestamp;
@@ -192,12 +215,37 @@ protected:
   // For path viz
   unsigned int poses_seq_gt = 0;
   std::vector<geometry_msgs::PoseStamped> poses_gt;
+  nav_msgs::Path satnav_path;
+  nav_msgs::Path inspva_path;
   bool publish_global2imu_tf = true;
   bool publish_calibration_tf = true;
 
   // Files and if we should save total state
   bool save_total_state = false;
   std::ofstream of_state_est, of_state_std, of_state_gt;
+
+  // fuse data from different topic
+  double unix_ref_imutime = 0.0;
+  bool unix_ref_imutime_got = false;
+
+  int sat_week_num = 0;
+  bool sat_week_num_got = false;
+
+  int sat_leap_sec = 0;
+  bool sat_leap_sec_got = false;
+
+  std::map<double, int> ggp_rover_fix_level;
+  std::map<double, int> ggp_base_fix_level;
+  bool rover_fix_level_got = false;
+  int rover_fix_level = 1;
+
+  // gnss loselock time and dist
+  double loselock_period = 10.0;
+  double loselock_begin_time, loselock_end_time = 0.0;
+  double loselock_begin_dist, loselock_end_dist = 0.0;
+  double error_dist = 0.0;
+  bool loselock_begin_time_got, loselock_end_time_got = false;
+  bool loselock_begin_dist_got, loselock_end_dist_got = false;
 };
 
 } // namespace ov_msckf

@@ -1,0 +1,72 @@
+<launch>
+  <node pkg="gnss_converter" type="gnss_converter" name="dm711" respawn="true" respawn_delay="10" output ="screen">
+    <!-- 接收GGA等信息的串口1定义,不需要时不赋值 -->
+    <param name="serial_port" type="str" value="/dev/ttyUSB0"/>
+    <param name="serial_port_baud" type="int" value="460800"/>
+    <param name="serial_port2" type="str" value="/dev/ttyUSB3"/>
+    <param name="serial_port2_baud" type="int" value="921600"/>
+
+    <!-- 串口接收日志保存的绝对路径 -->
+    <param name="uart_log_dir" type="str" value=""/>
+
+    <!-- pps接入端口 -->
+    <param name="pps_input" type="str" value="/dev/input/event2"/>
+    <!-- 接收pps脉冲上升沿的延时 -->
+    <param name="delay_pps_settime_us" type="int" value="120"/>
+    <!-- 是否对时:0.不对时, 1.读gga/RMC等等命令对时, 2.gga/RMC命令+pps对时 -->
+    <param name="enable_set_time" type="int" value="0"/>
+
+    <!-- <0:不读, =0:只读不发送, >0:读并发送 -->
+    <!-- 读取 gga 并 输出 csjw_msgs::Gpgga信息 -->
+    <param name="enable_read_gga" type="int" value="-1"/>
+    <!-- 读取 ggp 并 输出 csjw_msgs:Gpggp信息 -->
+    <param name="enable_read_ggp" type="int" value="1"/>
+    <!-- (未实现)读取 rmc 并 输出 nmea_msgs::Gprmc信息 -->
+    <param name="enable_read_rmc" type="int" value="-1"/>
+    <!-- (未实现)读取 GSV 并 输出 nmea_msgs::Gpgsv信息 -->
+    <param name="enable_read_gsv" type="int" value="-1"/>
+    <!-- 读取 inspva(1=B，2=A) 并 输出 csjw_msgs::Inspva信息 -->
+    <param name="enable_read_inspva" type="int" value="-1"/>
+    <!-- 读取 IMUDATA(1=B，2=A) 并 输出 读取金维自定义csjw_msgs::IMUDATA信息 -->
+    <param name="enable_read_imudata" type="int" value="-1"/>
+    <!-- 读取 SATNAV(1=B，2=A) 并 输出 金维自定义卫导csjw_msgs::SATNAV信息 -->
+    <param name="enable_read_satnav" type="int" value="1"/>
+    <!-- 读取 INSAV(1=B，2=A) 并 输出 读取金维自定义卫惯csjw_msgs::insnav信息 -->
+    <param name="enable_read_insnav" type="int" value="-1"/>
+
+    <!-- 输出sensor_msgs::NavSatFix信息, 信息来源: -1:不输出, 0:SATNAVB, 1:SATNAVA(未实现), 2:GGA(未实现), 3~N:待定 -->
+    <param name="enable_nav_sat_fix" type="int" value="0"/>
+    <!-- (未实现) 读取 SATNAV 并 输出 gps_common::GPSFix信息, 信息来源: -1:不输出, 0:SATNAVB(未实现), 1:SATNAVA(未实现), 2:GGA(未实现), 3~N:待定 -->
+    <param name="enable_gps_fix" type="int" value="-1"/>
+    <!-- 输出卫星星数std_msgs::UInt8信息, 信息来源: -1:不输出, 0:SATNAVB, 1:SATNAVA,(未实现) 2:GGA/GGS(未实现), 3:INSPVAB, 4:INSPVAA(未实现), 5~N:待定 -->
+    <param name="enable_master_sat_num" type="int" value="-1"/>
+    <param name="enable_slaver_sat_num" type="int" value="-1"/>
+    <!-- 输出卫导速度geometry_msgs::TwistStamped信息, 信息来源: -1:不输出, 0:SATNAVB, 1:SATNAVA(未实现), 2~N:待定 -->
+    <param name="enable_gnss_vel" type="int" value="-1"/>
+    <!-- 输出卫惯速度geometry_msgs::TwistStamped信息, 信息来源: -1:不输出, 0:INSNAVB, 1:INSNAVA(未实现), 2~N:待定 -->
+    <param name="enable_ins_vel" type="int" value="-1"/>
+    <!-- 输出sensor_msgs::Imu信息, 信息来源: -1:不输出, 0:IMUDATAB, 1:IMUDATAA(未实现), 2:INSPVAB, 3:INSPVAA(未实现), 4~N:待定 -->
+    <param name="enable_imu" type="int" value="-1"/>
+    
+
+    <!-- 转发Ntrip定位差分数据 -->
+    <param name="enable_rtk_ntrip_transfer" type="bool" value="true"/>
+    <!-- Ntrip接入域名 -->
+    <param name="ntrip_addr" type="str" value="121.46.29.109"/>
+    <!-- <param name="ntrip_addr" type="str" value="183.3.128.94"/> -->    
+    <!-- Ntrip端口 -->
+    <param name="ntrip_port" type="int" value="2101"/>
+    <!-- <param name="ntrip_port" type="int" value="65002"/> -->
+    <!-- Ntrip用户名 为空表示tcp client模式 -->
+    <param name="ntrip_user" type="str" value="18948707017"/>
+    <!-- Ntrip密码 为空表示tcp client模式 -->
+    <param name="ntrip_pwd" type="str" value="ydhq85019880"/>
+    <!-- Ntrip挂载点 为空表示tcp client模式 -->
+    <param name="ntrip_mnt" type="str" value="NETRTK32_BD3"/>
+    <!-- Ntrip初始化经纬度, -->
+    <param name="rtk_ntrip_latitude" type="double" value="28.0"/>
+    <param name="rtk_ntrip_longitude" type="double" value="113.0"/>
+  </node>
+
+  <node pkg="tf" type="static_transform_publisher" name="gnss_link_broadcaster" args="0.0 0.0 0.0 0 0 0 1 base_link gnss 100" respawn="true" respawn_delay="10"/>
+</launch>

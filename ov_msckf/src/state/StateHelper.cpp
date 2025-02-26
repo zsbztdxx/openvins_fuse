@@ -33,6 +33,52 @@ using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
+inline double quantify_rover_fix_level(int level) {
+  double quantify_result = 1.0;
+  switch (level) {
+    case 1:
+      quantify_result = 1.0;
+      return quantify_result;
+      break;
+    case 2:
+      quantify_result = 0.9;
+      return quantify_result;
+      break;
+    case 3:
+      quantify_result = 0.6;
+      return quantify_result;
+      break;
+    case 0:
+      quantify_result = 0.5;
+      return quantify_result;
+      break;
+    default:
+      return quantify_result;
+      break;
+  }
+}
+
+inline double quantify_gnss_status(int gnss_status) {
+  double quantify_result = 1.0;
+  switch (gnss_status) {
+    case 4:
+      quantify_result = 1.0;
+      return quantify_result;
+      break;
+    case 6:
+      quantify_result = 0.9;
+      return quantify_result;
+      break;
+    case 5:
+      quantify_result = 0.8;
+      return quantify_result;
+      break;
+    default:
+      return 0.2;
+      break;
+  }
+}
+
 void StateHelper::EKFPropagation(std::shared_ptr<State> state, const std::vector<std::shared_ptr<Type>> &order_NEW,
                                  const std::vector<std::shared_ptr<Type>> &order_OLD, const Eigen::MatrixXd &Phi,
                                  const Eigen::MatrixXd &Q) {
@@ -183,6 +229,102 @@ void StateHelper::EKFUpdate(std::shared_ptr<State> state, const std::vector<std:
 
   // Calculate our delta and update all our active states
   Eigen::VectorXd dx = K * res;
+  for (size_t i = 0; i < state->_variables.size(); i++) {
+    state->_variables.at(i)->update(dx.block(state->_variables.at(i)->id(), 0, state->_variables.at(i)->size(), 1));
+  }
+
+  // If we are doing online intrinsic calibration we should update our camera objects
+  // NOTE: is this the best place to put this update logic??? probably..
+  if (state->_options.do_calib_camera_intrinsics) {
+    for (auto const &calib : state->_cam_intrinsics) {
+      state->_cam_intrinsics_cameras.at(calib.first)->set_value(calib.second->value());
+    }
+  }
+}
+
+void StateHelper::GNSS_EKFUpdate(std::shared_ptr<State> state, const std::vector<std::shared_ptr<Type>> &H_order, const Eigen::MatrixXd &H,
+                            const Eigen::VectorXd &res, const Eigen::MatrixXd &R, const double &hdop, const int &level, const int &gnss_status) {
+
+  //==========================================================
+  //==========================================================
+  // Part of the Kalman Gain K = (P*H^T)*S^{-1} = M*S^{-1}
+  assert(res.rows() == R.rows());
+  assert(H.rows() == res.rows());
+  Eigen::MatrixXd M_a = Eigen::MatrixXd::Zero(state->_Cov.rows(), res.rows());
+
+  // Get the location in small jacobian for each measuring variable
+  int current_it = 0;
+  std::vector<int> H_id;
+  for (const auto &meas_var : H_order) {
+    H_id.push_back(current_it);
+    current_it += meas_var->size();
+  }
+
+  //==========================================================
+  //==========================================================
+  // For each active variable find its M = P*H^T
+  for (const auto &var : state->_variables) {
+    // Sum up effect of each subjacobian = K_i= \sum_m (P_im Hm^T)
+    Eigen::MatrixXd M_i = Eigen::MatrixXd::Zero(var->size(), res.rows());
+    for (size_t i = 0; i < H_order.size(); i++) {
+      std::shared_ptr<Type> meas_var = H_order[i];
+      M_i.noalias() += state->_Cov.block(var->id(), meas_var->id(), var->size(), meas_var->size()) *
+                       H.block(0, H_id[i], H.rows(), meas_var->size()).transpose();
+    }
+    M_a.block(var->id(), 0, var->size(), res.rows()) = M_i;
+  }
+
+  //==========================================================
+  //==========================================================
+  // Get covariance of the involved terms
+  Eigen::MatrixXd P_small = StateHelper::get_marginal_covariance(state, H_order);
+
+  // Residual covariance S = H*Cov*H' + R
+  Eigen::MatrixXd S(R.rows(), R.rows());
+  S.triangularView<Eigen::Upper>() = H * P_small * H.transpose();
+  S.triangularView<Eigen::Upper>() += R;
+  // Eigen::MatrixXd S = H * P_small * H.transpose() + R;
+
+  // Invert our S (should we use a more stable method here??)
+  Eigen::MatrixXd Sinv = Eigen::MatrixXd::Identity(R.rows(), R.rows());
+  S.selfadjointView<Eigen::Upper>().llt().solveInPlace(Sinv);
+  Eigen::MatrixXd K = M_a * Sinv.selfadjointView<Eigen::Upper>();
+  // Eigen::MatrixXd K = M_a * S.inverse();
+
+  // Update Covariance
+  state->_Cov.triangularView<Eigen::Upper>() -= K * M_a.transpose();
+  state->_Cov = state->_Cov.selfadjointView<Eigen::Upper>();
+  // Cov -= K * M_a.transpose();
+  // Cov = 0.5*(Cov+Cov.transpose());
+
+  // We should check if we are not positive semi-definitate (i.e. negative diagionals is not s.p.d)
+  Eigen::VectorXd diags = state->_Cov.diagonal();
+  bool found_neg = false;
+  for (int i = 0; i < diags.rows(); i++) {
+    if (diags(i) < 0.0) {
+      PRINT_WARNING(RED "StateHelper::EKFUpdate() - diagonal at %d is %.2f\n" RESET, i, diags(i));
+      found_neg = true;
+    }
+  }
+  if (found_neg) {
+    std::exit(EXIT_FAILURE);
+  }
+
+  // Calculate our delta and update all our active states
+  Eigen::VectorXd dx;
+  double qr = quantify_rover_fix_level(level);
+  double qgs = quantify_gnss_status(gnss_status);
+  // PRINT_INFO(RED "qr的值是 %.2f\n" RESET, qr);
+  if (hdop < 2) {
+    dx = qgs * qr * K * res;
+  } else if (hdop >= 2 && hdop < 5 ) {
+    dx = qgs * qr * (1 - (hdop - 2) / 6) * K * res;
+  } else {
+    dx = qgs * qr * 0.5 * K * res;
+  }
+
+  // Eigen::VectorXd dx = (hdop - 2) / 3.0 * K * res;
+  
   for (size_t i = 0; i < state->_variables.size(); i++) {
     state->_variables.at(i)->update(dx.block(state->_variables.at(i)->id(), 0, state->_variables.at(i)->size(), 1));
   }

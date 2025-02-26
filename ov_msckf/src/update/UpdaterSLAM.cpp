@@ -466,6 +466,19 @@ void UpdaterSLAM::update(std::shared_ptr<State> state, std::vector<std::shared_p
   Hx_big.conservativeResize(ct_meas, ct_jacob);
   R_big.conservativeResize(ct_meas, ct_meas);
 
+  // // 打印更新阶段视惯测量噪声上三角矩阵视图
+  // Eigen::MatrixXd R = R_big.selfadjointView<Eigen::Upper>();
+  // PRINT_INFO(YELLOW "更新阶段视惯测量噪声上三角矩阵的值:\n", RESET);
+  // for (int i = 0; i < R.rows(); ++i) {
+  //     for (int j = i; j < R.cols(); ++j) {
+  //         std::cout << R(i, j);
+  //         if (j < R.cols() - 1) {
+  //             std::cout << " ";
+  //         }
+  //     }
+  //     std::cout << std::endl;
+  // }
+
   // 5. With all good SLAM features update the state
   StateHelper::EKFUpdate(state, Hx_order_big, Hx_big, res_big, R_big);
   rT3 = boost::posix_time::microsec_clock::local_time();

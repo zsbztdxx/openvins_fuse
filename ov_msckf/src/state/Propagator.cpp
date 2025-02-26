@@ -83,7 +83,7 @@ void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timest
     for (size_t i = 0; i < prop_data.size() - 1; i++) {
 
       // Get the next state Jacobian and noise Jacobian for this IMU reading
-      Eigen::MatrixXd F, Qdi;
+      Eigen::MatrixXd F, Qdi;  //F: state transition matrix; Qdi: discrete noise covariance matrix
       predict_and_compute(state, prop_data.at(i), prop_data.at(i + 1), F, Qdi);
 
       // Next we should propagate our IMU covariance
@@ -96,9 +96,30 @@ void Propagator::propagate_and_clone(std::shared_ptr<State> state, double timest
       Qd_summed = F * Qd_summed * F.transpose() + Qdi;
       Qd_summed = 0.5 * (Qd_summed + Qd_summed.transpose());
       dt_summed += prop_data.at(i + 1).timestamp - prop_data.at(i).timestamp;
+
+      // std::thread thread(save_imupos_thread, lla_filepath);
+      // thread.detach();
+      // double timestamp = state->_timestamp;
+      // Eigen::Vector3d pos = state->_imu->pos();
+      // PRINT_INFO(GREEN "保存imupos文件时的pos值为：x：%.4f y：%.4f z：%.4f\n" RESET, pos(0), pos(1), pos(2));
+      // std::lock_guard<std::mutex> lck(imu_pos_queue_mtx);
+      // imu_pos.emplace_back(std::pair<double, Eigen::Vector3d>(timestamp, pos));
     }
   }
   assert(std::abs((time1 - time0) - dt_summed) < 1e-4);
+
+  // // 打印预测阶段过程噪声上三角矩阵视图
+  // Eigen::MatrixXd Q = Qd_summed.selfadjointView<Eigen::Upper>();
+  // PRINT_INFO(BLUE "预测阶段过程噪声上三角矩阵的值:\n", RESET);
+  // for (int i = 0; i < Q.rows(); ++i) {
+  //     for (int j = i; j < Q.cols(); ++j) {
+  //         std::cout << Q(i, j);
+  //         if (j < Q.cols() - 1) {
+  //             std::cout << " ";
+  //         }
+  //     }
+  //     std::cout << std::endl;
+  // }
 
   // Last angular velocity (used for cloning when estimating time offset)
   // Remember to correct them before we store them

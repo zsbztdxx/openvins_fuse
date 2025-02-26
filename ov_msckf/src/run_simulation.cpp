@@ -155,7 +155,8 @@ int main(int argc, char **argv) {
     if (hasimu) {
       sys->feed_measurement_imu(message_imu);
 #if ROS_AVAILABLE == 1 || ROS_AVAILABLE == 2
-      viz->visualize_odometry(message_imu.timestamp);
+      std::deque<pair<double, Eigen::Vector3d>> imu_pos;
+      viz->visualize_odometry(message_imu.timestamp, imu_pos);
 #endif
     }
 

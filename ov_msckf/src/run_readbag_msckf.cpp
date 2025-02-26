@@ -54,7 +54,7 @@ std::shared_ptr<ROS2Visualizer> viz;
 
 std::atomic<bool> thread_update_running;
 std::deque<ov_core::CameraData> camera_queue;
-std::deque<ov_core::GnssData> gnss_queue;
+std::deque<ov_core::SatNavData> gnss_queue;
 std::mutex camera_queue_mtx,gnss_queue_mtx;
 std::map<int, double> camera_last_timestamp;
 
@@ -129,8 +129,9 @@ void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg)
   message.am << msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z;
 
   // send it to our VIO system
+  std::deque<pair<double, Eigen::Vector3d>> imu_pos;
   sys->feed_measurement_imu(message);
-  viz->visualize_odometry(message.timestamp);
+  viz->visualize_odometry(message.timestamp, imu_pos);
 
   // If the processing queue is currently active / running just return so we can keep getting measurements
   // Otherwise create a second thread to do our update in an async manor
@@ -305,14 +306,14 @@ void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::
   std::sort(camera_queue.begin(), camera_queue.end());
 }
 
-void callback_gnss(const ov_msckf::satnavConstPtr &msg) 
+void callback_satnav(const ov_msckf::satnavConstPtr &msg) 
 {
   if(msg->pos_status==0)
   {
     return;
   }
   // convert into correct format
-  ov_core::GnssData message;
+  ov_core::SatNavData message;
   message.timestamp = msg->header.header.stamp.toSec();
   message.latitude = msg->latitude;
   message.longitude = msg->longitude;
@@ -505,7 +506,7 @@ int main(int argc, char **argv) {
     else if(topic == gnss_topic)
     {
       ov_msckf::satnavConstPtr gnss_msg = msg.instantiate<ov_msckf::satnav>();
-      callback_gnss(gnss_msg);
+      callback_satnav(gnss_msg);
     }
 
     if(!use_stereo){

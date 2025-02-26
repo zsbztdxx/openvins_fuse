@@ -44,7 +44,8 @@ InertialInitializer::InertialInitializer(InertialInitializerOptions &params_, st
   imu_data = std::make_shared<std::vector<ov_core::ImuData>>();
 
   // Vector of our GNSS data
-  gnss_data = std::make_shared<std::vector<ov_core::GnssData>>();
+  gnss_data = std::make_shared<std::vector<ov_core::SatNavData>>();
+  ins_gnss_data = std::make_shared<std::vector<ov_core::InsPvaData>>();
 
   // Vector of our imu pos data
   imu_pos_vec = std::make_shared<std::vector<std::pair<double,Eigen::Vector3d>>>();
@@ -78,13 +79,12 @@ void InertialInitializer::feed_imu(const ov_core::ImuData &message, double oldes
   }
 }
 
-void InertialInitializer::feed_gnss(const ov_core::GnssData &message, double oldest_time) {
-
+void InertialInitializer::feed_gnss(const ov_core::SatNavData &message, double oldest_time) {
   // Append it to our vector
   gnss_data->emplace_back(message);
 
-  // Loop through and delete imu messages that are older than our requested time
-  // std::cout << "INIT: imu_data.size() " << imu_data->size() << std::endl;
+  // Loop through and delete gnss messages that are older than our requested time
+  // std::cout << "INIT: gnss_data.size() " << gnss_data->size() << std::endl;
   if (oldest_time != -1) {
     auto it0 = gnss_data->begin();
     while (it0 != gnss_data->end()) {
@@ -97,7 +97,25 @@ void InertialInitializer::feed_gnss(const ov_core::GnssData &message, double old
   }
 }
 
-void InertialInitializer::feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos, double oldest_time){
+void InertialInitializer::feed_gnss(const ov_core::InsPvaData &message, double oldest_time) {
+  // Append it to our vector
+  ins_gnss_data->emplace_back(message);
+
+  // Loop through and delete gnss messages that are older than our requested time
+  // std::cout << "INIT: gnss_data.size() " << gnss_data->size() << std::endl;
+  if (oldest_time != -1) {
+    auto it0 = ins_gnss_data->begin();
+    while (it0 != ins_gnss_data->end()) {
+      if (it0->timestamp < oldest_time) {
+        it0 = ins_gnss_data->erase(it0);
+      } else {
+        it0++;
+      }
+    }
+  }
+}
+
+void InertialInitializer::feed_imu_pos(const std::pair<double, Eigen::Vector3d> &pos, double oldest_time){
   // Append it to our vector
   imu_pos_vec->emplace_back(pos);
   if (oldest_time != -1) {
@@ -109,7 +127,7 @@ void InertialInitializer::feed_imu_pos(const std::pair<double,Eigen::Vector3d> &
         it0++;
       }
     }
-  }else{
+  } else {
     oldest_time = pos.first - params.init_gnss_window_time;
     auto it0 = imu_pos_vec->begin();
     while (it0 != imu_pos_vec->end()) {
@@ -230,20 +248,20 @@ bool InertialInitializer::initialize_gnss(Eigen::Matrix3d &R_GNSStoI, Eigen::Vec
     pre_lla.first = DBL_MAX,next_lla.first = DBL_MAX;
     for(size_t i=0;i<gnss_data->size();i++)
     {
-      if(gnss_data->at(i).status_pos!=4){
-        continue;
-      }
+      // if(gnss_data->at(i).status_pos!=4){
+      //   continue;
+      // }
       double tg = gnss_data->at(i).timestamp - dt_CAMtoIMU;
       std::vector<double> lla(3);
       lla[0] = gnss_data->at(i).latitude;
       lla[1] = gnss_data->at(i).longitude;
       lla[2] = gnss_data->at(i).altitude;
       double dt = tg - ti;
-      if(dt < 0 && fabs(dt)<fabs(pre_lla.first - ti))
+      if(dt < 0 && fabs(dt) < fabs(pre_lla.first - ti))
       {
         pre_lla.first = tg;
         pre_lla.second = lla;
-      }else if(dt > 0 && fabs(dt)<fabs(next_lla.first - ti))
+      } else if (dt > 0 && fabs(dt) < fabs(next_lla.first - ti))
       {
         next_lla.first = tg;
         next_lla.second = lla;
@@ -253,9 +271,9 @@ bool InertialInitializer::initialize_gnss(Eigen::Matrix3d &R_GNSStoI, Eigen::Vec
       continue;
     }
     std::vector<double> pre_enu = lla2enu(pre_lla.second,lla0);
-    std::vector<double> next_enu = lla2enu(pre_lla.second,lla0);
+    std::vector<double> next_enu = lla2enu(next_lla.second,lla0);
     std::pair<double,Eigen::Vector3d> pos0,pos1;
-    pos0.first = pre_lla.first,pos1.first = next_lla.first;
+    pos0.first = pre_lla.first, pos1.first = next_lla.first;
     pos0.second[0] = pre_enu[0],pos0.second[1] = pre_enu[1],pos0.second[2] = pre_enu[2];
     pos1.second[0] = next_enu[0],pos1.second[1] = next_enu[1],pos1.second[2] = next_enu[2];
     Eigen::Vector3d enu = linear_interpolation_enu(pos0,pos1,ti);
@@ -267,6 +285,119 @@ bool InertialInitializer::initialize_gnss(Eigen::Matrix3d &R_GNSStoI, Eigen::Vec
     //PRINT_INFO(YELLOW "next gnss time: %f\n" RESET, next_lla.first);
   }
   if(gnss_pos.size()<3){
+    PRINT_INFO(YELLOW "not enough gnss data to init\n" RESET);
+    return false;
+  }
+  double s = 0;
+  for(size_t i=0;i<imu_pos.size()-1;i++)
+  {
+    Eigen::Vector3d ds = imu_pos[i+1] - imu_pos[i];
+    s += std::sqrt(ds[0]*ds[0]+ds[1]*ds[1]+ds[2]*ds[2]);
+  }
+  if(s<params.init_gnss_min_move){
+    PRINT_INFO(YELLOW "not enough move to init gnss\n" RESET);
+    return false;
+  }
+  for(size_t i=0;i<imu_pos.size();i++)
+  {
+    PRINT_INFO(YELLOW "imu pos[%d]:(%f,%f,%f),gnss pos[%d]:(%f,%f,%f)\n" RESET, i,imu_pos[i][0],imu_pos[i][1],imu_pos[i][2],i,gnss_pos[i][0],gnss_pos[i][1],gnss_pos[i][2]);
+  }
+
+  Eigen::Matrix3d RWC;
+  Eigen::Vector3d TWC;
+  double SWC;
+
+  if (!getRTWC(gnss_pos, imu_pos, RWC, TWC, SWC))
+  {
+    PRINT_INFO(YELLOW "gnss and vio path align falied\n" RESET);
+    return false;
+  }
+
+  Eigen::Vector3d n = RWC.col(0);
+
+  double yaw = atan2(n(1), n(0));
+
+  PRINT_INFO(YELLOW "scale:%f,yaw:%f,t:(%f,%f,%f)\n" RESET,SWC,yaw / M_PI * 180.0,TWC(0),TWC(1),TWC(2));
+  PRINT_INFO(YELLOW "imu_pos_vec size: %d\n" RESET, imu_pos_vec->size());
+
+  R_GNSStoI = RWC.transpose();
+  if(SWC<0){
+    R_GNSStoI = -R_GNSStoI;
+  }
+  tran = R_GNSStoI * (-TWC);
+  init_lla = lla0;
+
+  return true;
+}
+
+bool InertialInitializer::initialize_ins_gnss(Eigen::Matrix3d &R_GNSStoI, Eigen::Vector3d &tran,std::vector<double> &init_lla,
+                                    std::map<double, std::shared_ptr<ov_type::PoseJPL >> &clone_imu,double dt_CAMtoIMU) {
+  
+  /*if(gnss_data->size()<2 || clone_imu.size()<2)
+  {
+    return false;
+  }*/
+  if(ins_gnss_data->size()<2 || imu_pos_vec->size()<2)
+  {
+    return false;
+  }
+
+  std::vector<double> lla0(3);
+  double dt = DBL_MAX;
+  for(size_t i = 0; i < ins_gnss_data->size(); i++){
+    if(fabs(ins_gnss_data->at(i).timestamp - imu_pos_vec->at(0).first) < dt) {
+      lla0[0] = ins_gnss_data->at(i).ins_lat;
+      lla0[1] = ins_gnss_data->at(i).ins_lon;
+      lla0[2] = ins_gnss_data->at(i).ins_hgt;
+    }
+  }
+
+  std::vector<Eigen::Vector3d> imu_pos, gnss_pos;
+  for(auto &imu : *imu_pos_vec)
+  {
+    double ti = imu.first;
+
+    std::pair<double, std::vector<double>> pre_lla, next_lla;
+    pre_lla.first = DBL_MAX, next_lla.first = DBL_MAX;
+    for(size_t i = 0; i < ins_gnss_data->size(); i++)
+    {
+      // if(ins_gnss_data->at(i).gnss_status != 4){
+      //   continue;
+      // }
+      double tg = ins_gnss_data->at(i).timestamp - dt_CAMtoIMU;
+      std::vector<double> lla(3);
+      lla[0] = ins_gnss_data->at(i).ins_lat;
+      lla[1] = ins_gnss_data->at(i).ins_lon;
+      lla[2] = ins_gnss_data->at(i).ins_hgt;
+      double dt = tg - ti;
+      if (dt < 0 && fabs(dt) < fabs(pre_lla.first - ti))
+      {
+        pre_lla.first = tg;
+        pre_lla.second = lla;
+      } else if (dt > 0 && fabs(dt) < fabs(next_lla.first - ti))
+      {
+        next_lla.first = tg;
+        next_lla.second = lla;
+      }
+    }
+    if((next_lla.first - pre_lla.first < 1e-6) || (next_lla.first - pre_lla.first > 0.2)){
+      continue;
+    }
+    std::vector<double> pre_enu = lla2enu(pre_lla.second, lla0);
+    std::vector<double> next_enu = lla2enu(next_lla.second, lla0);
+    std::pair<double, Eigen::Vector3d> pos0, pos1;
+    pos0.first = pre_lla.first, pos1.first = next_lla.first;
+    pos0.second[0] = pre_enu[0], pos0.second[1] = pre_enu[1], pos0.second[2] = pre_enu[2];
+    pos1.second[0] = next_enu[0], pos1.second[1] = next_enu[1], pos1.second[2] = next_enu[2];
+    Eigen::Vector3d enu = linear_interpolation_enu(pos0, pos1, ti);
+    gnss_pos.push_back(enu);
+    //imu_pos.push_back(imu.second->pos());
+    imu_pos.push_back(imu.second);
+    //PRINT_INFO(YELLOW "pre gnss time: %f\n" RESET, pre_lla.first);
+    //PRINT_INFO(YELLOW "clone imu time: %f\n" RESET, ti);
+    //PRINT_INFO(YELLOW "next gnss time: %f\n" RESET, next_lla.first);
+  }
+  if(gnss_pos.size() < 3) {
     PRINT_INFO(YELLOW "not enough gnss data to init\n" RESET);
     return false;
   }

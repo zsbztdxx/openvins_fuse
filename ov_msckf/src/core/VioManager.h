@@ -75,8 +75,32 @@ public:
    */
   void feed_measurement_imu(const ov_core::ImuData &message);
 
-  void feed_measurement_gnss(const ov_core::GnssData &message);
+  /**
+   * @brief Feed function for satnav gnss data
+   * @param message Contains information about gnss
+   */
+  void feed_measurement_gnss(const ov_core::SatNavData &message);
 
+  /**
+   * @brief Feed function for satnav gnss data, version of simulating gnss loselock 
+   * @param message Contains information about gnss
+   * @param time loselock time
+   */
+  void feed_measurement_gnss(const ov_core::SatNavData &message, const double &time);
+
+  /**
+   * @brief Feed function for inspva gnss data
+   * @param message Contains information about gnss
+   */
+  void feed_measurement_gnss(const ov_core::InsPvaData &message);
+
+  /**
+   * @brief Feed function for inspva gnss data and ggp level
+   * @param message Contains information about gnss
+   * @param level ggp rover fix level
+   */
+  void feed_measurement_gnss(const ov_core::InsPvaData &message, const int &level);
+  
   void feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos);
 
   /**
@@ -154,6 +178,14 @@ public:
 
   Eigen::Vector3d get_t_GNSStoI(){
     return init_t_GNSStoI;
+  }
+
+  double get_distance() {
+    return distance;
+  }
+
+  double get_loselock_timestamp() {
+    return loselock_timestamp;
   }
 
 protected:
@@ -250,6 +282,10 @@ protected:
 
   // Startup time of the filter
   double startup_time = -1;
+
+  // Set first loselock time
+  double loselock_timestamp = -1;
+  bool next_loselock_timestamp_got = false;
 
   // Threads and their atomics
   std::atomic<bool> thread_init_running, thread_init_success;

@@ -70,7 +70,7 @@ private:
     Eigen::Vector3d pc_;
 };
 
-inline int getRTWC(const std::vector<Eigen::Vector3d> &pws, const std::vector<Eigen::Vector3d> &pcs, 
+inline bool getRTWC(const std::vector<Eigen::Vector3d> &pws, const std::vector<Eigen::Vector3d> &pcs, 
                     Eigen::Matrix3d &RWC, Eigen::Vector3d &TWC, double &SWC)
 {
     double par[5] = {1, 0, 0, 0, 0};

@@ -194,6 +194,9 @@ struct VioManagerOptions {
   /// Gravity magnitude in the global frame (i.e. should be 9.81 typically)
   double gravity_mag = 9.81;
 
+  /// loselock time
+  double loselock_period = 10.0;
+
   /// Gyroscope IMU intrinsics (scale imperfection and axis misalignment, column-wise, inverse)
   Eigen::Matrix<double, 6, 1> vec_dw;
 
@@ -233,6 +236,7 @@ struct VioManagerOptions {
   void print_and_load_state(const std::shared_ptr<ov_core::YamlParser> &parser = nullptr) {
     if (parser != nullptr) {
       parser->parse_config("gravity_mag", gravity_mag);
+      parser->parse_config("loselock_period", loselock_period);
       for (int i = 0; i < state_options.num_cameras; i++) {
 
         // Time offset (use the first one)

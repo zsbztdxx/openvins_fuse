@@ -2,12 +2,13 @@
 
     <!-- what config we are going to run (should match folder name) -->
     <arg name="verbosity"   default="INFO" /> <!-- ALL, DEBUG, INFO, WARNING, ERROR, SILENT -->
-    <arg name="config"      default="euroc_mav" /> <!-- euroc_mav, tum_vi, rpng_aruco -->
+    <arg name="config"      default="jxh62_0219" /> euroc_mav, tum_vi, rpng_aruco
+    <!-- <arg name="config"      default="ov9281_1226" /> euroc_mav, tum_vi, rpng_aruco -->
     <arg name="config_path" default="$(find ov_msckf)/../config/$(arg config)/estimator_config.yaml" />
 
     <!-- mono or stereo and what ros bag to play -->
-    <arg name="max_cameras" default="2" />
-    <arg name="use_stereo"  default="true" />
+    <arg name="max_cameras" default="1" />
+    <arg name="use_stereo"  default="false" />
     <arg name="bag_start"   default="0" /> <!-- v1-2: 0, mh1: 40, mh2: 35, mh3: 17.5, mh4-5: 15 -->
     <arg name="bag_rate"    default="1" />
     <arg name="dataset"     default="V1_01_easy" /> <!-- V1_01_easy, V1_02_medium, V2_02_medium -->
@@ -44,6 +45,11 @@
 
     </node>
 
+    <node pkg="rviz" type="rviz" name="rviz" args="-d /home/alientek/openvins_jz/src/open_vins/ov_msckf/launch/display.rviz" respawn="true" />
+    
+    <!-- <include file="$(find usb_cam)/launch/usbcam_JXH62_stereo.launch"/>
+    <include file="$(find gnss_converter)/launch/csjw_gnss_ins_converter.launch"/> -->
+
     <!-- play the dataset -->
     <group if="$(arg dobag)">
         <node pkg="rosbag" type="play" name="rosbag" args="-d 1 -r $(arg bag_rate) -s $(arg bag_start) $(arg bag)" required="true"/>
@@ -53,7 +59,8 @@
     <group if="$(arg dosave)">
         <node name="recorder_estimate" pkg="ov_eval" type="pose_to_file" output="screen" required="true">
             <param name="topic"      type="str" value="/ov_msckf/poseimu" />
-            <param name="topic_type" type="str" value="PoseWithCovarianceStamped" />
+            <!-- <param name="topic_type" type="str" value="PoseWithCovarianceStamped" /> -->
+            <param name="topic_type" type="str" value="PoseStamped" />
             <param name="output"     type="str" value="$(arg path_est)" />
         </node>
     </group>

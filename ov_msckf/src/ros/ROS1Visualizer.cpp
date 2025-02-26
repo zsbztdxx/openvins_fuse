@@ -30,13 +30,207 @@
 #include "utils/dataset_reader.h"
 #include "utils/print.h"
 #include "utils/sensor_data.h"
+#include "utils/pos_transform.h"
+
 
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
 
+//save lla path
+std::shared_ptr<VioManager> sys;
+std::deque<std::pair<double,Eigen::Vector3d>> fuse_pos;
+std::mutex fuse_pos_queue_mtx;
+bool quit_save_lla = false;
+bool save_lla_file = false;
+
+//save imu_integ
+std::deque<std::pair<double, Eigen::Vector3d>> imu_integ;
+std::mutex imu_integ_queue_mtx;
+bool imu_pos_first_initialized = false;
+std::pair<double, Eigen::Vector3d> imu_pos_first;
+Eigen::Vector3d imu_pos;
+std::deque<std::pair<double, Eigen::Vector3d>> imu_pos_queue;
+bool quit_save_imu_integ = false;
+bool save_imu_integ = false;
+
+void save_imu_integ_thread(const std::string path) {
+  FILE* fp = fopen(path.c_str(),"w");
+  bool save_as_rtkplot_pos = false;
+  if(path.find(".pos") != std::string::npos){
+    save_as_rtkplot_pos = true;
+  }
+  if (save_as_rtkplot_pos) {
+    fprintf(fp, "%% UTC                     latitude(deg)  longitude(deg)  height(m) Q  ns   sdn(m)   sde(m)   sdu(m)  sdne(m)  sdeu(m)  sdun(m) age(s)  ratio\n");
+  } else {
+    fprintf(fp,"#timestamp,latitude,longitude,altitude\n");
+  }
+
+  fflush(fp);
+  while(!quit_save_imu_integ) {
+    if(imu_integ.size() > 0 && sys->initialized_gnss())
+    {
+      std::lock_guard<std::mutex> lck(imu_integ_queue_mtx);
+      while (!imu_integ.empty())
+      {
+        double timestamp = imu_integ.front().first;
+        Eigen::Vector3d pos_imu = imu_integ.front().second;
+        Eigen::Vector3d pos_gnss = sys->get_R_GNSStoI().transpose()*(pos_imu-sys->get_t_GNSStoI());
+        std::vector<double> tmp(3);
+        tmp[0] = pos_gnss[0],tmp[1] = pos_gnss[1],tmp[2] = pos_gnss[2];
+        std::vector<double> lla = enu2lla(tmp,sys->get_init_lla());
+
+        if(save_as_rtkplot_pos){
+          ros::WallTime time = ros::WallTime(timestamp + 8*3600);
+          int year = time.toBoost().date().year();
+          int month = time.toBoost().date().month();
+          int day = time.toBoost().date().day();
+          int hours = time.toBoost().time_of_day().hours();
+          int minutes = time.toBoost().time_of_day().minutes();
+          int seconds = time.toBoost().time_of_day().seconds();
+          int milliseconds = round(time.toBoost().time_of_day().fractional_seconds()/1000.0);
+          
+          char timestr[64];
+
+          sprintf(timestr,"%04d/%02d/%02d %02d:%02d:%02d.%03d",year,month,day,hours,minutes,seconds,milliseconds);
+          fprintf(fp, "%s   %.09f   %.9f   %.4f   4   0   0   0   0   0   0   0   0   0\n", timestr, lla[0], lla[1], lla[2]);
+        }else{
+          fprintf(fp, "%.6f,%.9f,%.9f,%.4f\n", timestamp, lla[0], lla[1], lla[2]);
+        }
+        imu_integ.pop_front();
+      }
+      fflush(fp);
+    }
+    usleep(100*1000);
+  }
+  fclose(fp);
+}
+
+void save_lla_thread(const std::string path) {
+
+    FILE* fp = fopen(path.c_str(),"w");
+    bool save_as_rtkplot_pos = false;
+    if(path.find(".pos") != std::string::npos){
+      save_as_rtkplot_pos = true;
+    }
+
+    if(save_as_rtkplot_pos){
+      fprintf(fp, "%% UTC                    latitude(deg)  longitude(deg)  height(m) Q  ns   sdn(m)   sde(m)   sdu(m)  sdne(m)  sdeu(m)  sdun(m) age(s)  ratio\n");
+    }else{
+      fprintf(fp,"#timestamp,latitude,longitude,altitude\n");
+    }
+    
+    fflush(fp);
+    while(!quit_save_lla)
+    {
+        if(fuse_pos.size()>0 && sys && sys->initialized_gnss())
+        {
+          std::lock_guard<std::mutex> lck(fuse_pos_queue_mtx);
+          while (!fuse_pos.empty())
+          {
+            double timestamp = fuse_pos.front().first;
+            Eigen::Vector3d pos_imu = fuse_pos.front().second;
+            Eigen::Vector3d pos_gnss = sys->get_R_GNSStoI().transpose()*(pos_imu-sys->get_t_GNSStoI());
+            std::vector<double> tmp(3);
+            tmp[0] = pos_gnss[0],tmp[1] = pos_gnss[1],tmp[2] = pos_gnss[2];
+            std::vector<double> lla = enu2lla(tmp,sys->get_init_lla());
+
+            if(save_as_rtkplot_pos){
+              // ros::WallTime time = ros::WallTime(timestamp + 8*3600);
+              ros::WallTime time = ros::WallTime(timestamp);
+              int year = time.toBoost().date().year();
+              int month = time.toBoost().date().month();
+              int day = time.toBoost().date().day();
+              int hours = time.toBoost().time_of_day().hours();
+              int minutes = time.toBoost().time_of_day().minutes();
+              int seconds = time.toBoost().time_of_day().seconds();
+              int milliseconds = round(time.toBoost().time_of_day().fractional_seconds()/1000.0);
+              
+              char timestr[64];
+
+              sprintf(timestr,"%04d/%02d/%02d %02d:%02d:%02d.%03d",year,month,day,hours,minutes,seconds,milliseconds);
+              fprintf(fp, "%s   %.09f   %.9f   %.4f   4   0   0   0   0   0   0   0   0   0\n", timestr, lla[0], lla[1], lla[2]);
+            }else{
+              fprintf(fp, "%.6f,%.9f,%.9f,%.4f\n", timestamp, lla[0], lla[1], lla[2]);
+            }
+            
+            fuse_pos.pop_front();
+          }
+          fflush(fp);
+        }
+        usleep(100*1000);
+    }
+    fclose(fp);
+}
+
+struct gtime_t {
+    time_t time;
+    double sec;
+};
+
+inline gtime_t epoch2time(const double *ep) {
+    const int doy[]={1,32,60,91,121,152,182,213,244,274,305,335};
+
+    gtime_t time={0};
+
+    int days,sec,year=(int)ep[0],mon=(int)ep[1],day=(int)ep[2];
+    
+    if (year<1970||2099<year||mon<1||12<mon) return time;
+    
+    /* leap year if year%4==0 in 1901-2099 */
+    days=(year-1970)*365+(year-1969)/4+doy[mon-1]+day-2+(year%4==0&&mon>=3?1:0);
+    sec=(int)floor(ep[5]);
+    time.time=(time_t)days*86400+(int)ep[3]*3600+(int)ep[4]*60+sec;
+    time.sec=ep[5]-sec;
+    return time;
+}
+
+inline gtime_t gpst2time(int week, double sec) {
+    const double gpst0[6] = {1980, 1, 6, 0, 0, 0}; /* gps time reference */
+
+    gtime_t t = epoch2time(gpst0);
+
+    // std::cerr << "epoch2time为:" << t.time << "epoch2time为" << t.sec << std::endl;
+
+    if (sec < -1E9 || 1E9 < sec)
+    {
+        t.time += (time_t)(86400 * 7 * week);
+        t.sec = 0;
+    }
+    else
+    {
+      t.time += (time_t)(86400 * 7 * week) + (int)sec;
+      t.sec = sec - (int)sec;
+    }
+    return t;
+}
+
+inline void judge_ggp_rover_fix_level(int level) {
+  switch(level) {
+    case 0: 
+      PRINT_INFO(RED "GGP分级协议固定解等级：非固定解\n" RESET);
+      break;
+    case 1:
+      PRINT_INFO(GREEN "GGP分级协议固定解等级：最优固定解\n" RESET);
+      break;
+    case 2:
+      PRINT_INFO(GREEN "GGP分级协议固定解等级：次优固定解\n" RESET);
+      break;
+    case 3:
+      PRINT_INFO(GREEN "GGP分级协议固定解等级：不可靠固定解\n" RESET);
+      break;
+    default:
+      PRINT_INFO(RED "非GGP分级协议等级状态！\n" RESET);
+      break;
+  }
+}
+
 ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_ptr<VioManager> app, std::shared_ptr<Simulator> sim)
     : _nh(nh), _app(app), _sim(sim), thread_update_running(false) {
+
+  sys = app;
+
+  loselock_period = _app->get_params().loselock_period;
 
   // Setup our transform broadcaster
   mTfBr = std::make_shared<tf::TransformBroadcaster>();
@@ -45,7 +239,8 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   image_transport::ImageTransport it(*_nh);
 
   // Setup pose and path publisher
-  pub_poseimu = nh->advertise<geometry_msgs::PoseWithCovarianceStamped>("poseimu", 2);
+  // pub_poseimu = nh->advertise<geometry_msgs::PoseWithCovarianceStamped>("poseimu", 2);
+  pub_poseimu = nh->advertise<geometry_msgs::PoseStamped>("poseimu", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_poseimu.getTopic().c_str());
   pub_odomimu = nh->advertise<nav_msgs::Odometry>("odomimu", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_odomimu.getTopic().c_str());
@@ -71,6 +266,14 @@ ROS1Visualizer::ROS1Visualizer(std::shared_ptr<ros::NodeHandle> nh, std::shared_
   PRINT_DEBUG("Publishing: %s\n", pub_posegt.getTopic().c_str());
   pub_pathgt = nh->advertise<nav_msgs::Path>("pathgt", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_pathgt.getTopic().c_str());
+
+  //satnav path publishers
+  pub_satnav = nh->advertise<nav_msgs::Path>("satnav_path", 2);
+  PRINT_DEBUG("Publishing: %s\n", pub_satnav.getTopic().c_str());
+
+  //inspva path publishers
+  pub_inspva = nh->advertise<nav_msgs::Path>("inspva_path", 2);
+  PRINT_DEBUG("Publishing: %s\n", pub_inspva.getTopic().c_str());
 
   // Loop closure publishers
   pub_loop_pose = nh->advertise<nav_msgs::Odometry>("loop_pose", 2);
@@ -160,6 +363,27 @@ void ROS1Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
   sub_imu = _nh->subscribe(topic_imu, 1000, &ROS1Visualizer::callback_inertial, this);
   PRINT_INFO("subscribing to IMU: %s\n", topic_imu.c_str());
 
+  // Create gnss subscriber
+  bool fuse_gnss = false;
+  parser->parse_config("fuse_gnss", fuse_gnss ,false);
+  std::string topic_satnav;
+  std::string topic_ggp;
+  std::string topic_inspva;
+  if(fuse_gnss) {
+    parser->parse_config("satnav_topic", topic_satnav);
+    sub_satnav = _nh->subscribe(topic_satnav, 100, &ROS1Visualizer::callback_satnav, this);
+    // sub_gnss = _nh->subscribe(gnss_topic, 1000, &ROS1Visualizer::callback_insnav, this);
+    PRINT_INFO("fuse gnss = true, satnav_topic = %s\n",topic_satnav.c_str());
+
+    parser->parse_config("ggp_topic", topic_ggp);
+    sub_ggp = _nh->subscribe(topic_ggp, 100, &ROS1Visualizer::callback_ggp, this);
+    PRINT_INFO("subscribing to ggp: %s\n", topic_ggp.c_str());
+    
+    parser->parse_config("inspva_topic", topic_inspva);
+    sub_inspva = _nh->subscribe(topic_inspva, 1000, &ROS1Visualizer::callback_inspva, this);
+    PRINT_INFO("subscribing to inspva: %s\n", topic_inspva.c_str());
+  }
+
   // Logic for sync stereo subscriber
   // https://answers.ros.org/question/96346/subscribe-to-two-image_raws-with-one-function/?answer=96491#post-id-96491
   if (_app->get_params().state_options.num_cameras == 2) {
@@ -191,6 +415,24 @@ void ROS1Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
       subs_cam.push_back(_nh->subscribe<sensor_msgs::Image>(cam_topic, 10, boost::bind(&ROS1Visualizer::callback_monocular, this, _1, i)));
       PRINT_INFO("subscribing to cam (mono): %s\n", cam_topic.c_str());
     }
+  }
+
+  //save lla file
+  parser->parse_config("fuse_gnss", save_lla_file ,false);
+  if(save_lla_file) {
+    std::string lla_filepath = "/tmp/ov_estimate_lla.txt";
+    parser->parse_config("lla_filepath", lla_filepath);
+    std::thread thread(&save_lla_thread,lla_filepath);
+    thread.detach();
+  }
+
+  //save imu_integ file
+  parser->parse_config("save_imu_integ", save_imu_integ, false);
+  if (save_imu_integ) {
+    std::string imu_integ_filepath = "/tmp/imu_integ.pos";
+    parser->parse_config("imu_integ_filepath", imu_integ_filepath);
+    std::thread thread(&save_imu_integ_thread, imu_integ_filepath);
+    thread.detach();
   }
 }
 
@@ -242,7 +484,7 @@ void ROS1Visualizer::visualize() {
   // PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for visualization\n" RESET, time_total);
 }
 
-void ROS1Visualizer::visualize_odometry(double timestamp) {
+void ROS1Visualizer::visualize_odometry(double timestamp, std::deque<pair<double, Eigen::Vector3d>> &imu_pos_queue) {
 
   // Return if we have not inited
   if (!_app->initialized())
@@ -283,7 +525,7 @@ void ROS1Visualizer::visualize_odometry(double timestamp) {
   //  }
 
   // Publish our odometry message if requested
-  if (pub_odomimu.getNumSubscribers() != 0) {
+  // if (pub_odomimu.getNumSubscribers() != 0) {
 
     nav_msgs::Odometry odomIinM;
     odomIinM.header.stamp = ros::Time(timestamp);
@@ -297,6 +539,10 @@ void ROS1Visualizer::visualize_odometry(double timestamp) {
     odomIinM.pose.pose.position.x = state_plus(4);
     odomIinM.pose.pose.position.y = state_plus(5);
     odomIinM.pose.pose.position.z = state_plus(6);
+    imu_pos << state_plus(4), state_plus(5), state_plus(6);
+    imu_pos_queue.push_back(std::make_pair(timestamp, imu_pos));
+    // PRINT_INFO(GREEN "执行visualize_odom时，imu_pos的值为：x：%.4f y：%.4f z：%.4f\n" RESET, imu_pos(0), imu_pos(1), imu_pos(2));
+
 
     // The TWIST component (angular and linear velocities)
     odomIinM.child_frame_id = "imu";
@@ -324,7 +570,7 @@ void ROS1Visualizer::visualize_odometry(double timestamp) {
       }
     }
     pub_odomimu.publish(odomIinM);
-  }
+  // }
 
   // Publish our transform on TF
   // NOTE: since we use JPL we have an implicit conversion to Hamilton when we publish
@@ -433,6 +679,9 @@ void ROS1Visualizer::visualize_final() {
   // Print the total time
   rT2 = boost::posix_time::microsec_clock::local_time();
   PRINT_INFO(REDPURPLE "TIME: %.3f seconds\n\n" RESET, (rT2 - rT1).total_microseconds() * 1e-6);
+
+  quit_save_lla = true;
+  quit_save_imu_integ = true;
 }
 
 void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
@@ -443,10 +692,37 @@ void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
   message.wm << msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z;
   message.am << msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z;
 
+  // extract Y/M/D of imu time to fill the ggp timestamp
+  unix_ref_imutime = message.timestamp;
+  if(unix_ref_imutime == 0) {
+    unix_ref_imutime_got = false;
+    return;
+  } else {
+    unix_ref_imutime_got = true;
+  }
+
   // send it to our VIO system
   _app->feed_measurement_imu(message);
-  visualize_odometry(message.timestamp);
+  visualize_odometry(message.timestamp, imu_pos_queue);
 
+  // extract imu integration result and publish
+  if (save_imu_integ && _app->initialized() && imu_pos_queue.size() > 2) {
+    std::lock_guard<std::mutex> lck(imu_integ_queue_mtx);
+    if (!imu_pos_first_initialized) {
+      imu_pos_first = imu_pos_queue.front();
+      imu_pos_first_initialized = true;
+    }
+    auto it0 = imu_pos_queue.begin();
+    while (it0 != imu_pos_queue.end()) {
+      if (it0->first - imu_pos_first.first >= 0.1) {
+        imu_integ.emplace_back(*it0);
+        imu_pos_first = *it0;
+        // PRINT_INFO(GREEN "存入imu_integ队列的第一个值为：time：%.4f x：%.4f y：%.4f z：%.4f\n" RESET, it0->first, it0->second(0), it0->second(1), it0->second(2));
+      }
+      it0 = imu_pos_queue.erase(it0);
+    }
+  }
+          
   // If the processing queue is currently active / running just return so we can keep getting measurements
   // Otherwise create a second thread to do our update in an async manor
   // The visualization of the state, images, and features will be synchronous with the update!
@@ -475,12 +751,117 @@ void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
       while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
         auto rT0_1 = boost::posix_time::microsec_clock::local_time();
         double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
+
+        // if(!gnss_queue.empty()){
+        //   std::lock_guard<std::mutex> lck(satnav_queue_mtx);
+        //   while (!gnss_queue.empty() && gnss_queue.at(0).timestamp < camera_queue.at(0).timestamp)
+        //   {
+        //     if(gnss_queue.at(0).timestamp > _app->get_state()->_timestamp) {
+        //       _app->feed_measurement_gnss(gnss_queue.at(0));   
+        //     }
+        //     gnss_queue.pop_front();
+        //   }
+        // }
+
+        // if (!ins_gnss_queue.empty()) {
+        //   std::lock_guard<std::mutex> lck(inspva_queue_mtx);
+        //   while (!ins_gnss_queue.empty() && ins_gnss_queue.at(0).timestamp < camera_queue.at(0).timestamp) {
+        //     // feed gnss data 
+        //     if(ins_gnss_queue.at(0).timestamp > _app->get_state()->_timestamp) {
+        //       _app->feed_measurement_gnss(ins_gnss_queue.at(0));    
+        //     }
+        //     ins_gnss_queue.pop_front();
+        //   }
+        // }
+ 
+        PRINT_INFO(BLUE "ins_gnss队列的大小为：%d\n" RESET, ins_gnss_queue.size());
+        if (!ins_gnss_queue.empty()) {
+          std::lock_guard<std::mutex> lck(inspva_queue_mtx);
+          while (!ins_gnss_queue.empty() && ins_gnss_queue.at(0).timestamp < camera_queue.at(0).timestamp) {
+            // feed gnss data 
+            // if(ins_gnss_queue.at(0).timestamp > _app->get_state()->_timestamp) {
+            //   _app->feed_measurement_gnss(ins_gnss_queue.at(0));    
+            // }
+            
+            PRINT_INFO(BLUE "ggp队列的大小为：%d\n" RESET, ggp_queue.size());
+            if (!ggp_queue.empty()) {
+              if (ggp_queue.at(0).timestamp == ins_gnss_queue.at(0).timestamp) {
+                rover_fix_level = ggp_queue.at(0).rover_fix_level;
+                _app->feed_measurement_gnss(ins_gnss_queue.at(0), rover_fix_level);
+                ins_gnss_queue.pop_front();
+                ggp_queue.pop_front();
+              } else {
+                _app->feed_measurement_gnss(ins_gnss_queue.at(0), rover_fix_level);
+                ins_gnss_queue.pop_front();
+              }
+            } else {
+              _app->feed_measurement_gnss(ins_gnss_queue.at(0), rover_fix_level);
+              ins_gnss_queue.pop_front();
+            }
+          }
+        }
         _app->feed_measurement_camera(camera_queue.at(0));
+
+        ///手动失锁代码：直接去除GNSS输入
+        /*
+        // PRINT_INFO(GREEN "gnss队列的大小为：%d\n" RESET, gnss_queue.size());
+        if (gnss_queue.size() > 1) {
+          std::lock_guard<std::mutex> lck(satnav_queue_mtx);
+          while (!gnss_queue.empty() && gnss_queue.at(0).timestamp < camera_queue.at(0).timestamp)
+          {
+            // feed gnss data, and simulate the status of gnss loselock
+            _app->feed_measurement_gnss(gnss_queue.at(0), loselock_period);
+            if (_app->initialized_gnss() && gnss_queue.at(0).timestamp >= _app->get_loselock_timestamp() && !loselock_begin_time_got) {
+              loselock_begin_time = gnss_queue.at(0).timestamp;
+              PRINT_INFO(RED "loselock_begin_time为：%.2f\n" RESET, loselock_begin_time);
+              loselock_begin_time_got = true; 
+              loselock_end_time_got = false;
+            } else if (_app->initialized_gnss() && gnss_queue.at(1).timestamp > _app->get_loselock_timestamp() + loselock_period && !loselock_end_time_got) {
+              loselock_end_time = gnss_queue.at(0).timestamp;
+              PRINT_INFO(RED "loselock_end_time为：%.2f\n" RESET, loselock_end_time);
+              loselock_end_time_got = true;
+              loselock_begin_time_got = false;
+            }
+            gnss_queue.pop_front();
+          }
+        }
+
+        _app->feed_measurement_camera(camera_queue.at(0));
+        
+        if (loselock_begin_time_got && !loselock_begin_dist_got ) {
+          loselock_begin_dist = _app->get_distance();
+          loselock_begin_dist_got = true;
+          loselock_end_dist_got = false;
+          PRINT_INFO(RED "loselock_begin_dist = %.2f (meters)\n", RESET, loselock_begin_dist);
+        } else if (loselock_end_time_got && !loselock_end_dist_got) {
+          loselock_end_dist = _app->get_distance();
+          loselock_end_dist_got = true;
+          loselock_begin_dist_got = false;
+          PRINT_INFO(RED "loselock_end_dist = %.2f (meters)\n", RESET, loselock_end_dist);
+          PRINT_INFO(RED "error_dist = %.2f (meters)\n", RESET, loselock_end_dist - loselock_begin_dist);
+        }
+        */
+
         visualize();
         camera_queue.pop_front();
         auto rT0_2 = boost::posix_time::microsec_clock::local_time();
         double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
         PRINT_INFO(BLUE "[TIME]: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
+
+        if(_app->initialized() && !_app->initialized_gnss()) {
+          double timestamp = _app->get_state()->_timestamp;
+          Eigen::Vector3d pos = _app->get_state()->_imu->pos();
+          _app->feed_imu_pos(std::pair<double, Eigen::Vector3d>(timestamp, pos));
+          PRINT_INFO(BLUE "!initialized_gnss, feed imu pos\n" RESET);
+        }
+
+        if(save_lla_file && _app->initialized()) {
+          double timestamp = _app->get_state()->_timestamp;
+          Eigen::Vector3d pos = _app->get_state()->_imu->pos();
+          // PRINT_INFO(GREEN "保存lla文件时的pos值为：x：%.4f y：%.4f z：%.4f\n" RESET, pos(0), pos(1), pos(2));
+          std::lock_guard<std::mutex> lck(fuse_pos_queue_mtx);
+          fuse_pos.emplace_back(std::pair<double,Eigen::Vector3d>(timestamp,pos));
+        }
       }
     }
     thread_update_running = false;
@@ -586,6 +967,321 @@ void ROS1Visualizer::callback_stereo(const sensor_msgs::ImageConstPtr &msg0, con
   std::lock_guard<std::mutex> lck(camera_queue_mtx);
   camera_queue.push_back(message);
   std::sort(camera_queue.begin(), camera_queue.end());
+}
+
+void ROS1Visualizer::callback_satnav(const ov_msckf::satnavConstPtr &msg) {
+  if(msg->pos_status==0) return;
+
+  // convert into correct format
+  ov_core::SatNavData message;
+  message.timestamp = msg->header.header.stamp.toSec();
+
+  message.week_num = msg->header.week_num;
+  sat_week_num = message.week_num;
+  if (sat_week_num == 0) {
+    sat_week_num_got = false;
+    return;
+  } else {
+    sat_week_num_got = true;
+  }
+
+  message.leap_sec = msg->header.leap_sec;
+  sat_leap_sec = message.leap_sec;
+  if (sat_leap_sec == 0) {
+    sat_leap_sec_got = false;
+    return;
+  } else {
+    sat_leap_sec_got = true;
+  }
+
+  message.latitude = msg->latitude;
+  message.longitude = msg->longitude;
+  message.altitude = msg->altitude;
+  message.ve = msg->vel_east;
+  message.vn = msg->vel_north;
+  message.vu = msg->vel_up;
+  message.status_pos = msg->pos_status;
+  message.std_latitude = msg->std_latitude;
+  message.std_longitude = msg->std_longitude;
+  message.std_altitude = msg->std_altitude;
+  message.std_ve = msg->std_vel_east;
+  message.std_vn = msg->std_vel_north;
+  message.std_vu = msg->std_vel_up;
+  message.sat_num_master = msg->sat_num_master;
+  message.sat_num_slaver = msg->sat_num_slaver;
+
+  // append it to our queue of gnss
+  std::lock_guard<std::mutex> lck(satnav_queue_mtx);
+  gnss_queue.push_back(message);
+  std::sort(gnss_queue.begin(), gnss_queue.end());
+
+  // pub gnss pos 
+  if(!_app->initialized_gnss())
+  {
+    return;
+  }
+
+  std::vector<double> gnss_pub_init_lla = _app->get_init_lla();
+
+  std::vector<double> lla(3);
+  lla[0]=msg->latitude,lla[1]=msg->longitude,lla[2]=msg->altitude;
+
+  std::vector<double> enu = lla2enu(lla,gnss_pub_init_lla);
+
+  satnav_path.header.stamp = msg->header.header.stamp;
+  satnav_path.header.frame_id = "global";
+  geometry_msgs::PoseStamped curr_path;
+
+  curr_path.header.stamp = msg->header.header.stamp;
+  curr_path.header.frame_id = "global";
+
+  Eigen::Vector3d tmp;
+  tmp[0] = enu[0],tmp[1] = enu[1],tmp[2] = enu[2];
+  tmp = _app->get_R_GNSStoI() * tmp + _app->get_t_GNSStoI();
+
+  curr_path.pose.position.x = tmp[0];
+  curr_path.pose.position.y = tmp[1];
+  curr_path.pose.position.z = tmp[2];
+
+  curr_path.pose.orientation.x = 0;
+  curr_path.pose.orientation.y = 0;
+  curr_path.pose.orientation.z = 0;
+  curr_path.pose.orientation.w = 1;
+
+  satnav_path.poses.push_back(curr_path);
+
+  pub_satnav.publish(satnav_path);
+}
+
+/*
+void ROS1Visualizer::callback_insnav(const ov_msckf::insnavConstPtr &msg) {
+  if(msg->pos_status==0)
+  {
+    return;
+  }
+  // convert into correct format
+  ov_core::InsNavData message;
+  message.timestamp = msg->header.header.stamp.toSec();
+  message.latitude = msg->latitude;
+  message.longitude = msg->longitude;
+  message.altitude = msg->altitude;
+  message.ve = msg->vel_east;
+  message.vn = msg->vel_north;
+  message.vu = msg->vel_up;
+  message.pitch = msg->pitch;
+  message.roll = msg->roll;
+  message.yaw = msg->yaw;
+  message.pos_status = msg->pos_status;
+  message.std_latitude = msg->std_latitude;
+  message.std_longitude = msg->std_longitude;
+  message.std_altitude = msg->std_altitude;
+  // message.sat_accuracy_factor = msg->
+  // message.sat_num_master = msg->
+  // message.sat_num_slaver = msg->
+
+  // append it to our queue of gnss
+  std::lock_guard<std::mutex> lck(gnss_queue_mtx);
+  gnss_queue.push_back(message);
+  std::sort(gnss_queue.begin(), gnss_queue.end());
+
+  //pub gnss pos 
+  if(!_app->initialized_gnss())
+  {
+    return;
+  }
+
+  std::vector<double> gnss_pub_init_lla = _app->get_init_lla();
+
+  std::vector<double> lla(3);
+  lla[0]=msg->latitude,lla[1]=msg->longitude,lla[2]=msg->altitude;
+
+  std::vector<double> enu = lla2enu(lla,gnss_pub_init_lla);
+
+  insnav_path.header.stamp = msg->header.header.stamp;
+  insnav_path.header.frame_id = "global";
+  geometry_msgs::PoseStamped curr_path;
+
+  curr_path.header.stamp = msg->header.header.stamp;
+  curr_path.header.frame_id = "global";
+
+  Eigen::Vector3d tmp;
+  tmp[0] = enu[0],tmp[1] = enu[1],tmp[2] = enu[2];
+  tmp = _app->get_R_GNSStoI() * tmp + _app->get_t_GNSStoI();
+
+  curr_path.pose.position.x = tmp[0];
+  curr_path.pose.position.y = tmp[1];
+  curr_path.pose.position.z = tmp[2];
+
+  curr_path.pose.orientation.x = 0;
+  curr_path.pose.orientation.y = 0;
+  curr_path.pose.orientation.z = 0;
+  curr_path.pose.orientation.w = 1;
+
+  insnav_path.poses.push_back(curr_path);
+
+  pub_insnav.publish(insnav_path);
+}
+*/
+
+void ROS1Visualizer::callback_ggp(const ov_msckf::ggpConstPtr &msg) {
+  if (!unix_ref_imutime_got) return;
+  ros::WallTime time = ros::WallTime(unix_ref_imutime);
+  double year = time.toBoost().date().year();
+  double month = time.toBoost().date().month();
+  double day = time.toBoost().date().day();
+
+  ov_core::GGPData message;
+  message.timestamp = msg->utc_seconds;
+  double hour = static_cast<int>(message.timestamp) / 10000;
+  double minute = (static_cast<int>(message.timestamp) / 100) % 100;
+  double second = std::fmod(message.timestamp, 100);
+
+  double utc[6] = {year, month, day, hour, minute, second};
+  gtime_t unix_time = epoch2time(utc);
+  
+  // 将time_t类型的unix时间转换成double类型，0代表unix参考时
+  double time_double = std::difftime(unix_time.time, 0);
+  // PRINT_INFO(GREEN "ggptime为：%.4f ggpsec为：%.4f\n" RESET, time_double, unix_time.sec);
+  ros::Time ggp_ros_time;
+  ggp_ros_time.fromSec(time_double + unix_time.sec);
+  message.timestamp = ggp_ros_time.toSec();
+  // PRINT_INFO(GREEN "message.timestamp为：%.2f\n" RESET, message.timestamp);
+
+  message.rover_fix_level = msg->rover_fix_level;
+  message.base_fix_level = msg->base_fix_level;
+  ggp_rover_fix_level[message.timestamp] = message.rover_fix_level;
+  ggp_base_fix_level[message.timestamp] = message.base_fix_level;
+
+  if (ggp_base_fix_level.at(message.timestamp) == 0) {
+    PRINT_INFO(GREEN "GGP分级协议基站状态：无效or当前为移动站模式\n" RESET);
+    judge_ggp_rover_fix_level(ggp_rover_fix_level.at(message.timestamp));
+    rover_fix_level_got = true;
+  } else if (ggp_base_fix_level.at(message.timestamp) == 1) {
+    PRINT_INFO(GREEN "GGP分级协议基站状态：excellent\n" RESET);
+    judge_ggp_rover_fix_level(ggp_rover_fix_level.at(message.timestamp));
+    rover_fix_level_got = true;
+  } else if (ggp_base_fix_level.at(message.timestamp) == 2) {
+    PRINT_INFO(GREEN "GGP分级协议基站状态：good\n" RESET);
+    judge_ggp_rover_fix_level(ggp_rover_fix_level.at(message.timestamp));
+    rover_fix_level_got = true;
+  } else if (ggp_base_fix_level.at(message.timestamp) == 3) {
+    PRINT_INFO(RED "GGP分级协议基站状态：bad\n" RESET);
+    judge_ggp_rover_fix_level(ggp_rover_fix_level.at(message.timestamp));
+    rover_fix_level_got = false;
+  } else return;
+
+  // double total_seconds = 5 * 24 * 3600 + hour * 3600 + minute * 60 + second;
+  // gtime_t correct_time = gpst2time(2346, total_seconds);
+  // std::cerr << "callback_ggp为:" << correct_time.time << "callback_ggp为" << correct_time.sec << std::endl;
+  // PRINT_INFO(GREEN "转换后的utc时间为：%.4f\n" RESET, correct_time);
+
+  // double integerPart;
+  // double fractionalPart;
+  message.lat = msg->lat;
+  // PRINT_INFO(RED "callback_ggp为：x:%.8f\n" RESET, message.lat);
+  // fractionalPart = std::modf(message.lat, &integerPart) / 0.6;
+  // message.lat = integerPart + fractionalPart;
+  // message.lat = static_cast<double>(static_cast<int>(message.lat)) + (message.lat - static_cast<int>(message.lat)) / 60.0;
+  
+  message.lon = msg->lon;
+  // PRINT_INFO(RED "callback_ggp为：y:%.8f\n" RESET, message.lon);
+  // fractionalPart = std::modf(message.lon, &integerPart) / 0.6;
+  // message.lon = integerPart + fractionalPart;
+  // message.lon = static_cast<double>(static_cast<int>(message.lon)) + (message.lon - static_cast<int>(message.lon)) / 60.0;
+  
+  message.alt = msg->alt + msg->undulation;
+  // PRINT_INFO(RED "callback_ggp为：x:%.8f y:%.8f z:%.8f\n" RESET, message.lat, message.lon, message.alt);
+  // fractionalPart = std::modf(message.alt, &integerPart) / 0.6;
+  // message.alt = integerPart + fractionalPart;
+  // message.undulation = msg->undulation;
+
+  // PRINT_INFO(RED "callback_ggp为：x:%.10f y:%.10f z:%.10f\n" RESET, message.lat, message.lon, message.alt);
+
+  // append it to our queue of ggp
+  std::lock_guard<std::mutex> lck(ggp_queue_mtx);
+  ggp_queue.push_back(message);
+  std::sort(ggp_queue.begin(), ggp_queue.end());
+}
+
+void ROS1Visualizer::callback_inspva(const ov_msckf::inspvaConstPtr &msg) {
+
+  if (!(sat_week_num_got && sat_leap_sec_got && rover_fix_level_got)) return;
+  ov_core::InsPvaData message;
+  message.timestamp = msg->gpstime;
+  message.ins_status = msg->ins_status;
+  message.ins_lat = msg->ins_lat;
+  message.ins_lon = msg->ins_lon;
+  message.ins_hgt = msg->ins_hgt;
+  message.roll = msg->roll;
+  message.pitch = msg->pitch;
+  message.yaw = msg->yaw;
+  message.gnss_status = msg->gnss_status;
+  message.head_status = msg->head_status;
+  message.gnss_lat = msg->gnss_lat;
+  message.gnss_lon = msg->gnss_lon;
+  message.gnss_hgt = msg->gnss_hgt;
+  message.hdop = msg->hdop;
+  message.sat_num_master = msg->satM;
+  message.gyrox = msg->gyrox;
+  message.gyroy = msg->gyroy;
+  message.gyroz = msg->gyroz;
+  message.accx = msg->accx;
+  message.accy = msg->accy;
+  message.accz = msg->accz;
+
+  gtime_t correct_time = gpst2time(sat_week_num, message.timestamp);
+  correct_time.time -= sat_leap_sec;
+  ros::Time inspva_ros_time;
+  inspva_ros_time.fromSec(static_cast<double>(correct_time.time) + correct_time.sec);
+  message.timestamp = inspva_ros_time.toSec();
+  // PRINT_INFO(GREEN "inspva中转换后的time为：%.2f\n" RESET, message.timestamp);
+
+  // std::cerr << "callback_inspva函数中sat_week_num为：" << sat_week_num << std::endl;
+  // std::cerr << "callback_inspva为:" << correct_time.time << "callback_inspva为" << correct_time.sec << std::endl;
+  // PRINT_INFO(GREEN "callback_inspva为：x:%.12f y:%.12f z:%.12f\n" RESET, message.accx, message.accy, message.accz);
+  // PRINT_INFO(GREEN "ins为：x:%.8f y:%.8f z:%.8f\n" RESET, message.ins_lat, message.ins_lon, message.ins_hgt);
+  // PRINT_INFO(GREEN "gnss为：x:%.8f y:%.8f z:%.8f\n" RESET, message.gnss_lat, message.gnss_lon, message.gnss_hgt);
+
+  // append it to our queue of gnss
+  std::lock_guard<std::mutex> lck(inspva_queue_mtx);
+  ins_gnss_queue.push_back(message);
+  std::sort(ins_gnss_queue.begin(), ins_gnss_queue.end());
+
+  // pub gnss pos 
+  if(!_app->initialized_gnss()) {
+    return;
+  }
+
+  std::vector<double> inspva_pub_init_lla = _app->get_init_lla();
+
+  std::vector<double> lla(3);
+  lla[0]=msg->ins_lat,lla[1]=msg->ins_lon,lla[2]=msg->ins_hgt;
+
+  std::vector<double> enu = lla2enu(lla,inspva_pub_init_lla);
+
+  inspva_path.header.stamp = inspva_ros_time;
+  inspva_path.header.frame_id = "global";
+  geometry_msgs::PoseStamped curr_path;
+
+  curr_path.header.stamp = inspva_ros_time;
+  curr_path.header.frame_id = "global";
+
+  Eigen::Vector3d tmp;
+  tmp[0] = enu[0], tmp[1] = enu[1], tmp[2] = enu[2];
+  tmp = _app->get_R_GNSStoI() * tmp + _app->get_t_GNSStoI();
+
+  curr_path.pose.position.x = tmp[0];
+  curr_path.pose.position.y = tmp[1];
+  curr_path.pose.position.z = tmp[2];
+
+  curr_path.pose.orientation.x = 0;
+  curr_path.pose.orientation.y = 0;
+  curr_path.pose.orientation.z = 0;
+  curr_path.pose.orientation.w = 1;
+
+  inspva_path.poses.push_back(curr_path);
+
+  pub_inspva.publish(inspva_path);
 }
 
 void ROS1Visualizer::publish_state() {

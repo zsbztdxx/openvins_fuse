@@ -44,6 +44,8 @@
 #include "update/UpdaterZeroVelocity.h"
 #include "update/UpdaterGNSS.h"
 
+#include <boost/date_time/posix_time/posix_time.hpp>
+
 using namespace ov_core;
 using namespace ov_type;
 using namespace ov_msckf;
@@ -199,15 +201,75 @@ void VioManager::feed_measurement_imu(const ov_core::ImuData &message) {
   }
 }
 
-void VioManager::feed_measurement_gnss(const ov_core::GnssData &message) 
-{
+void VioManager::feed_measurement_gnss(const ov_core::SatNavData &message, const double &time) {
+ 
   // Push back to our initializer
   if (!is_initialized_gnss) {
     double oldest_time = -1;
-    if(is_initialized_vio){
+    if(is_initialized_vio) {
       oldest_time = startup_time;
     }
-    initializer->feed_gnss(message,oldest_time);
+    initializer->feed_gnss(message, oldest_time);
+    Eigen::Matrix3d R;
+    Eigen::Vector3d t;
+    std::vector<double> lla0;
+    bool res = initializer->initialize_gnss(R,t,lla0,state->_clones_IMU,state->_calib_dt_CAMtoIMU->value()(0));
+    
+    if(res){
+      is_initialized_gnss = true;
+      init_lla = lla0;
+      init_R_GNSStoI = R;
+      init_t_GNSStoI = t;
+      loselock_timestamp = startup_time + 60.0;
+      PRINT_ERROR(RED "失锁时刻设定为：%.2f!\n" RESET, loselock_timestamp);
+    }else{
+      PRINT_ERROR(RED "gnss and vio align failed!\n" RESET);
+      return;
+    }
+  }
+
+  if (init_lla.size() != 3) {
+    return;
+  }
+  
+  if (message.timestamp >= loselock_timestamp && message.timestamp <= loselock_timestamp + time) {
+    next_loselock_timestamp_got = false;
+    PRINT_ERROR(RED "现在是失锁时间！%.2f\n" RESET, message.timestamp);
+    PRINT_ERROR(RED "失锁时间长达：%.2f\n" RESET, time);
+
+    ros::WallTime time = ros::WallTime(message.timestamp);
+    int year = time.toBoost().date().year();
+    int month = time.toBoost().date().month();
+    int day = time.toBoost().date().day();
+    int hours = time.toBoost().time_of_day().hours();
+    int minutes = time.toBoost().time_of_day().minutes();
+    int seconds = time.toBoost().time_of_day().seconds();
+    int milliseconds = round(time.toBoost().time_of_day().fractional_seconds()/1000.0);
+    PRINT_ERROR(RED "现在是失锁时间！%04d/%02d/%02d %02d:%02d:%02d.%03d\n" RESET, year, month, day, hours, minutes, seconds, milliseconds);
+
+    return;
+  } else if (message.timestamp > loselock_timestamp + time && !next_loselock_timestamp_got) {
+    loselock_timestamp += 60.0;
+    PRINT_ERROR(RED "下一失锁时刻为：%.2f!\n" RESET, loselock_timestamp);
+    next_loselock_timestamp_got = true;
+  }
+
+  Eigen::Vector3d lla0;
+  lla0[0] = init_lla[0];
+  lla0[1] = init_lla[1];
+  lla0[2] = init_lla[2];
+  updaterGNSS->try_update(state, message, lla0, init_R_GNSStoI, init_t_GNSStoI);
+}
+
+void VioManager::feed_measurement_gnss(const ov_core::SatNavData &message) {
+
+    // Push back to our initializer
+  if (!is_initialized_gnss) {
+    double oldest_time = -1;
+    if(is_initialized_vio) {
+      oldest_time = startup_time;
+    }
+    initializer->feed_gnss(message, oldest_time);
     Eigen::Matrix3d R;
     Eigen::Vector3d t;
     std::vector<double> lla0;
@@ -223,15 +285,108 @@ void VioManager::feed_measurement_gnss(const ov_core::GnssData &message)
       return;
     }
   }
-  if(init_lla.size()!=3){
+
+  if (init_lla.size() != 3) {
     return;
   }
   Eigen::Vector3d lla0;
-  lla0[0] = init_lla[0],lla0[1] = init_lla[1],lla0[2] = init_lla[2];
-  updaterGNSS->try_update(state,message,lla0,init_R_GNSStoI,init_t_GNSStoI);
+  lla0[0] = init_lla[0];
+  lla0[1] = init_lla[1];
+  lla0[2] = init_lla[2];
+  updaterGNSS->try_update(state, message, lla0, init_R_GNSStoI, init_t_GNSStoI);
 }
 
-void VioManager::feed_imu_pos(const std::pair<double,Eigen::Vector3d> &pos)
+void VioManager::feed_measurement_gnss(const ov_core::InsPvaData &message) {
+
+  // Push back to our initializer
+  if (!is_initialized_gnss) {
+    double oldest_time = -1;
+    if(is_initialized_vio) {
+      oldest_time = startup_time;
+    }
+    initializer->feed_gnss(message, oldest_time);
+    Eigen::Matrix3d R;
+    Eigen::Vector3d t;
+    std::vector<double> lla0;
+    bool res = initializer->initialize_ins_gnss(R,t,lla0,state->_clones_IMU,state->_calib_dt_CAMtoIMU->value()(0));
+    
+    if(res){
+      is_initialized_gnss = true;
+      init_lla = lla0;
+      init_R_GNSStoI = R;
+      init_t_GNSStoI = t;
+    }else{
+      PRINT_ERROR(RED "gnss and vio align failed!\n" RESET);
+      return;
+    }
+  }
+
+  if (init_lla.size() != 3) {
+    return;
+  }
+  Eigen::Vector3d lla0;
+  lla0[0] = init_lla[0];
+  lla0[1] = init_lla[1];
+  lla0[2] = init_lla[2];
+  updaterGNSS->try_update(state, message, lla0, init_R_GNSStoI, init_t_GNSStoI);
+}
+
+void VioManager::feed_measurement_gnss(const ov_core::InsPvaData &message, const int &level) {
+
+  // Push back to our initializer
+  if (!is_initialized_gnss) {
+    double oldest_time = -1;
+    if(is_initialized_vio) {
+      oldest_time = startup_time;
+    }
+    initializer->feed_gnss(message, oldest_time);
+    Eigen::Matrix3d R;
+    Eigen::Vector3d t;
+    std::vector<double> lla0;
+    bool res = initializer->initialize_ins_gnss(R,t,lla0,state->_clones_IMU,state->_calib_dt_CAMtoIMU->value()(0));
+    
+    if(res){
+      is_initialized_gnss = true;
+      init_lla = lla0;
+      init_R_GNSStoI = R;
+      init_t_GNSStoI = t;
+    }else{
+      PRINT_ERROR(RED "gnss and vio align failed!\n" RESET);
+      return;
+    }
+  }
+
+  if (init_lla.size() != 3) {
+    return;
+  }
+  Eigen::Vector3d lla0;
+  lla0[0] = init_lla[0];
+  lla0[1] = init_lla[1];
+  lla0[2] = init_lla[2];
+  PRINT_INFO(GREEN "gnss_status：%d\n" RESET, message.gnss_status);
+  PRINT_INFO(GREEN "rover_fix_level：%d\n" RESET, level);
+  PRINT_INFO(GREEN "hdop：%.2f\n" RESET, message.hdop);
+
+  if (level == 0) {
+    loselock_timestamp = message.timestamp;
+    PRINT_ERROR(RED "现在是失锁时间！%.2f\n" RESET, loselock_timestamp);
+
+    ros::WallTime t = ros::WallTime(loselock_timestamp);
+    int year = t.toBoost().date().year();
+    int month = t.toBoost().date().month();
+    int day = t.toBoost().date().day();
+    int hours = t.toBoost().time_of_day().hours();
+    int minutes = t.toBoost().time_of_day().minutes();
+    int seconds = t.toBoost().time_of_day().seconds();
+    int milliseconds = round(t.toBoost().time_of_day().fractional_seconds()/1000.0);
+    PRINT_ERROR(RED "现在是失锁时间！%04d/%02d/%02d %02d:%02d:%02d.%03d\n" RESET, year, month, day, hours, minutes, seconds, milliseconds);
+  }
+
+
+  updaterGNSS->try_update(state, message, level, lla0, init_R_GNSStoI, init_t_GNSStoI);
+}
+
+void VioManager::feed_imu_pos(const std::pair<double, Eigen::Vector3d> &pos)
 {
   if (!is_initialized_gnss) {
     if(is_initialized_vio){
@@ -703,7 +858,7 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
   timelastupdate = message.timestamp;
 
   // Debug, print our current state
-  PRINT_INFO("q_GtoI = %.3f,%.3f,%.3f,%.3f | p_IinG = %.3f,%.3f,%.3f | dist = %.2f (meters)\n", state->_imu->quat()(0),
+  PRINT_INFO("state->_timestamp = %.2f | q_GtoI = %.3f,%.3f,%.3f,%.3f | p_IinG = %.3f,%.3f,%.3f | dist = %.2f (meters)\n", state->_timestamp, state->_imu->quat()(0),
              state->_imu->quat()(1), state->_imu->quat()(2), state->_imu->quat()(3), state->_imu->pos()(0), state->_imu->pos()(1),
              state->_imu->pos()(2), distance);
   PRINT_INFO("bg = %.4f,%.4f,%.4f | ba = %.4f,%.4f,%.4f\n", state->_imu->bias_g()(0), state->_imu->bias_g()(1), state->_imu->bias_g()(2),
