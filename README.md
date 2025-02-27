@@ -1,2 +1,2 @@
 # openvins_fuse
-a VIO which fuses GNSS based on openvins
+a VIO that fuses GNSS and is based on openvins
